@@ -1,16 +1,5 @@
 # System Reliability Copilot
 
-**Pete Tamisin** – Technical GTM Leader • AI & Data Engineering Architect • Builder & Teacher
-Chicago, IL
-
-* 20+ years designing data & AI platforms (Director at Capital One, ex-Databricks, 2x Series A startup exits, x-Siemens, x-Motorola)
-* Focused on **modern data platforms**, **context-aware RAG systems**, and **enterprise GenAI adoption**
-* Passionate about **teaching** and helping teams ship real-world AI systems
-
-📧 Email: `pete@tamisin.com`
-🔗 LinkedIn: [https://www.linkedin.com/in/peter-tamisin-50a3233a/](https://www.linkedin.com/in/peter-tamisin-50a3233a/)
-
----
 
 ## Overview
 
