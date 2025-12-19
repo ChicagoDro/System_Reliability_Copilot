@@ -6,7 +6,7 @@ Vector DB ingestion entrypoint for the Reliability Copilot schema.
 
 Examples:
   python -m src.ingest_embed_index --db-path data/reliability.db --mode lite
-  python -m src.ingest_embed_index --db-path data/reliability.db --mode demo --index-name reliability_demo
+  python -m src.ingest_embed_index --db-path data/reliability.db --mode demo --index_name reliability_demo
 """
 
 from __future__ import annotations
@@ -82,9 +82,8 @@ def main():
         description="Build FAISS vector index for Reliability Copilot RAG docs."
     )
     ap.add_argument("--db-path", required=True, help="Path to reliability SQLite DB.")
-    ap.add_argument("--mode", default="lite", choices=["lite", "demo"])
     ap.add_argument("--index-dir", default="indexes")
-    ap.add_argument("--index-name", default=None)
+    ap.add_argument("--index_name", default=None)
     ap.add_argument(
         "--provider",
         default=os.getenv("EMBEDDINGS_PROVIDER")
@@ -96,7 +95,7 @@ def main():
     ap.add_argument("--clean", action="store_true")
     args = ap.parse_args()
 
-    index_name = args.index_name or f"reliability_{args.mode}"
+    index_name = args.index_name
     out_dir = Path(args.index_dir) / index_name
 
     if args.clean and out_dir.exists():
@@ -112,7 +111,6 @@ def main():
 
     rag_docs = build_reliability_rag_docs(
         db_path=args.db_path,
-        mode=args.mode,
         days_back=args.days_back,
     )
 

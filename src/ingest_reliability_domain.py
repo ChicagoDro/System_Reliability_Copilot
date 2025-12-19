@@ -367,17 +367,12 @@ def _fetch_lineage(conn: sqlite3.Connection) -> List[RagDoc]:
 # Public entrypoint
 # ----------------------------
 
-def build_reliability_rag_docs(db_path: str, mode: str = "lite", days_back: Optional[int] = None) -> List[RagDoc]:
+def build_reliability_rag_docs(db_path: str, days_back: Optional[int] = None) -> List[RagDoc]:
     """
-    mode: lite|demo (used mainly for defaults)
-    days_back: optional override. If None, we choose a reasonable default.
+    Builds RAG documents from the SQLite database.
     """
-    # Default lookbacks (safe & deterministic)
-    if days_back is None:
-        # demo has richer data; still keep reasonable
-        days_back_effective = 120 if mode == "demo" else 90
-    else:
-        days_back_effective = int(days_back)
+    # Hardcode robust lookback window (was 120 for demo)
+    days_back_effective = int(days_back) if days_back else 120
 
     docs: List[RagDoc] = []
     with _get_conn(db_path) as conn:
@@ -388,22 +383,14 @@ def build_reliability_rag_docs(db_path: str, mode: str = "lite", days_back: Opti
         docs.extend(_fetch_incidents(conn, days_back=max(days_back_effective, 90)))
         docs.extend(_fetch_lineage(conn))
 
-    # Ensure metadata is always a dict (so ingest_embed_index can do **metadata safely)
+    # Cleanup metadata
     for d in docs:
-        if d.metadata is None:
-            d.metadata = {}
-        if d.title and "title" not in d.metadata:
-            d.metadata["title"] = d.title
-        if d.tags and "tags" not in d.metadata:
-            d.metadata["tags"] = d.tags
-        d.metadata.setdefault("mode", mode)
+        if d.metadata is None: d.metadata = {}
+        if d.title: d.metadata.setdefault("title", d.title)
+        d.metadata["ingest_strategy"] = "unified"
 
     return docs
 
-# ... (end of your existing code)
-
 if __name__ == "__main__":
-    # Adjust db_path as needed for your project structure
-    docs = build_reliability_rag_docs("data/reliability.db", mode="demo")
+    docs = build_reliability_rag_docs("data/reliability.db")
     print(f"Successfully built {len(docs)} RAG documents.")
-    # Add logic here if you need to save 'docs' somewhere

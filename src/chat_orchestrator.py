@@ -18,7 +18,7 @@ from src.config import (
     DEFAULT_TEMPERATURE,
     VENDOR_DOCS_INDEX_PATH,
     DOCS_RETRIEVER_K,
-    RELIABILITY_RUNBOOKS_INDEX_DEMO,
+    RELIABILITY_RUNBOOKS_INDEX_PATH,
     RUNBOOKS_RETRIEVER_K
 )
 from src.graph_retriever import GraphRAGRetriever
@@ -96,7 +96,6 @@ class BaseFaissRetriever:
     def is_available(self) -> bool:
         if self._available is None:
             import os
-            # Handle both Path objects and strings
             path_str = str(self.index_path)
             self._available = os.path.isdir(path_str)
         return self._available
@@ -127,9 +126,11 @@ class BaseFaissRetriever:
         return self._vs.similarity_search(query, k=k)
 
 class DatabricksDocsRetriever(BaseFaissRetriever):
+    """Retrieves from unified vendor documentation."""
     pass
 
 class RunbookRetriever(BaseFaissRetriever):
+    """Retrieves from internal operational runbooks."""
     pass
 
 # ---------------------------------------------------------------------------
@@ -297,15 +298,17 @@ class ReliabilityAssistant:
     def from_local(cls) -> "ReliabilityAssistant":
         # 1. Graph (Telemetry)
         graph = GraphRAGRetriever.from_local_index()
+        
         # 2. Vendor Docs
         docs = DatabricksDocsRetriever(VENDOR_DOCS_INDEX_PATH)
         docs_r = docs if docs.is_available() else None
+        
         # 3. Runbooks (Internal)
-        rbooks = RunbookRetriever(RELIABILITY_RUNBOOKS_INDEX_DEMO)
+        rbooks = RunbookRetriever(RELIABILITY_RUNBOOKS_INDEX_PATH)
         rbooks_r = rbooks if rbooks.is_available() else None
         
         return cls(graph_retriever=graph, docs_retriever=docs_r, runbooks_retriever=rbooks_r)
-
+    
     def _classify_question(self, question: str) -> dict:
         raw = self.classifier_chain.invoke({"question": question})
         try:
@@ -313,7 +316,6 @@ class ReliabilityAssistant:
         except Exception:
             return {"intent": "other", "entity_type": None}
 
-    # ... (Deterministic aggregations _compute_job_costs, etc. omitted for brevity, logic preserved) ...
     def _answer_global_aggregate(self, entity_type: str) -> ChatResult:
         entity_type = entity_type.lower()
         count = sum(1 for n in self.graph_retriever.adj.nodes.values() 
@@ -348,22 +350,19 @@ class ReliabilityAssistant:
         return out
 
     def answer(self, question: str, focus: Optional[dict] = None) -> ChatResult:
-        # 1. Deterministic Shortcuts (skipped for brevity)
+        # 1. Deterministic Shortcuts
         if _looks_like_job_count_question(question):
              return self._answer_global_aggregate("job")
 
         # 2. Retrieve Contexts
         
         # A) Telemetry (Graph)
-        # CRITICAL FIX: If a focus selection exists, manually force it into the search results
-        # This prevents "I don't have information" errors when fuzzy search fails.
+        # Force the focus entity into the search context
         forced_seeds = []
         if focus and focus.get("entity_id") and focus.get("entity_type"):
-            # Construct ID format matching ingest_reliability_domain.py (e.g. "incident:inc_001")
             forced_id = f"{focus['entity_type']}:{focus['entity_id']}"
             forced_seeds.append(forced_id)
 
-        # Retrieve subgraph using text query + forced seeds
         telemetry_docs, node_ids = self.graph_retriever.get_subgraph_for_query(
             query=question, 
             seed_limit=4, 
@@ -371,18 +370,12 @@ class ReliabilityAssistant:
             max_nodes=40
         )
 
-        # If we had a forced seed that wasn't found by text search, try to fetch it directly
-        # (This requires that GraphRAGRetriever exposed a 'get_node' or similar, 
-        # but expanding the subgraph via forced seeds is usually sufficient if supported.
-        # Since get_subgraph_for_query wraps search+expand, we rely on search.
-        # BETTER: We manually fetch the focus node if it's missing.)
+        # Ensure forced seeds are present
         if forced_seeds:
             missing = [fid for fid in forced_seeds if fid not in node_ids]
             for fid in missing:
-                # Try to fetch explicit node from graph
                 node = self.graph_retriever.get_node(fid)
                 if node:
-                    # Manually create a doc and append it
                     from src.graph_retriever import _graph_node_to_doc
                     telemetry_docs.insert(0, _graph_node_to_doc(fid, node))
                     node_ids.insert(0, fid)

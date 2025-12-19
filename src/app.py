@@ -77,15 +77,6 @@ def _default_chips_for_selection(report_name: str, sel: SelectionLike) -> List[C
             ),
         ),
         Chip(
-            id=f"core:spike:{_safe_slug(et)}:{_safe_slug(eid)}",
-            label="📈 Why a spike?",
-            group="Diagnose",
-            prompt=(
-                f"Did {et} ({eid}) spike recently? If so, give the most likely causes. "
-                "Walk through a few hypotheses (data growth, retries, evictions, sizing, schedule change) and how to verify each."
-            ),
-        ),
-        Chip(
             id=f"core:next:{_safe_slug(et)}:{_safe_slug(eid)}",
             label="✅ Next steps",
             group="Monitor",
@@ -228,13 +219,15 @@ PILLAR_CATALOG: List[Tuple[str, str, List[str], List[Tuple[str, str]]]] = [
         ],
     ),
     (
-        "Cost & Efficiency",
-        "Spend vs Reliability tradeoffs.",
-        [],  # Add "Cloud Cost Overview" here if you add cost tables later
-        [
-            ("Cost of Downtime", "Estimated financial impact of recent outages."),
-            ("Idle Resources", "Platforms provisioned but unused."),
-        ],
+            "Cost & Efficiency",
+            "Spend vs Reliability tradeoffs.",
+            [
+                "Cloud Cost Overview", # <--- Moved from TODO to Active
+            ],
+            [
+                ("Cost of Downtime", "Estimated financial impact of recent outages."),
+                ("Idle Resources", "Platforms provisioned but unused."),
+            ],
     ),
 ]
 
@@ -279,6 +272,10 @@ def _select_report(key: str) -> None:
     st.session_state.selected_report_key = key
     st.session_state.pending_prompt = None
     st.session_state.selection = None
+    
+    # NEW: Clear the commentary history so the chat pane resets
+    st.session_state.commentary = []
+    
     st.rerun()
 
 
@@ -617,7 +614,8 @@ with viz_col:
         st.markdown("**Select an item:**")
         cols = st.columns(3)
         for i, sel in enumerate(selections):
-            sel_key = f"select:{current_report.key}:{_safe_slug(sel.entity_type)}:{_safe_slug(sel.entity_id)}"
+            # FIX: Append :{i} to ensure unique keys when one resource has multiple log patterns
+            sel_key = f"select:{current_report.key}:{_safe_slug(sel.entity_type)}:{_safe_slug(sel.entity_id)}:{i}"
             with cols[i % 3]:
                 if st.button(sel.label, key=sel_key):
                     st.session_state.selection = sel
