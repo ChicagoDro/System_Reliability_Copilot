@@ -1,4 +1,3 @@
-```markdown
 # System Reliability Copilot
 
 **Pete Tamisin** – Technical GTM Leader • AI & Data Engineering Architect • Builder & Teacher
