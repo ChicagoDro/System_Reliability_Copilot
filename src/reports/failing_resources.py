@@ -1,4 +1,3 @@
-
 # src/reports/failing_resources.py
 import pandas as pd
 import streamlit as st
@@ -29,10 +28,23 @@ def render_failing(df: pd.DataFrame, filters: dict):
         return
 
     st.warning(f"Found {len(df)} resources with recent failures.")
+    
+    # FIX: Cast the max value to a standard Python int to avoid JSON serialization errors
+    max_fails = int(df["failure_count"].max()) if not df.empty else 10
+
     st.dataframe(
         df,
         column_config={
-            "failure_count": st.column_config.ProgressColumn("Failures", min_value=0, max_value=df["failure_count"].max()),
+            "failure_count": st.column_config.ProgressColumn(
+                "Failures", 
+                min_value=0, 
+                max_value=max_fails,
+                format="%d"
+            ),
+            "last_failure": st.column_config.DatetimeColumn(
+                "Last Failure",
+                format="D MMM, HH:mm"
+            )
         },
         use_container_width=True,
         hide_index=True
