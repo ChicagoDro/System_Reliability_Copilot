@@ -1,5 +1,5 @@
 def main():
-    print("Hello from databricks-usage-monitor!")
+    print("Hello from reliability-copilot!")
 
 
 if __name__ == "__main__":
