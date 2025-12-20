@@ -7,11 +7,14 @@
 -- 4. Airflow: Vendor Ingestion Failure (Empty Input File)
 -- 5. Databricks: Silver-to-Gold Schema Drift (Missing Column)
 -- 6. dbt: KPI Model Failure (Primary Key Duplication)
+-- 7. Databricks: SLA Breach (Regulatory Report)
+-- 8. Cost: Creeping Cloud Bill
+-- 9. K8s/Web: "Black Friday" Latency Spike (Nginx/API)
 
 PRAGMA foreign_keys = ON;
 
 -- ============================================================================
--- 1. PLATFORMS & ENVIRONMENTS
+-- 0. PLATFORMS & ENVIRONMENTS
 -- ============================================================================
 
 INSERT INTO platform (platform_id, platform_type, display_name, attributes_json) VALUES
@@ -121,53 +124,20 @@ INSERT INTO log_record (log_id, severity_text, body, resource_id, run_id, time) 
 INSERT INTO incident (incident_id, env_id, title, severity, status, opened_at, closed_at, summary, attributes_json) VALUES
 ('inc_006', 'prod', 'KPI Model Duplicates', 'LOW', 'RESOLVED', datetime('now', '-23 hours'), datetime('now', '-20 hours'), 'Primary key violation in monthly KPIs.', '{"related_resource_id": "res_dbt_kpis"}');
 
--- OPTIONAL: Add "Spam" logs to demonstrate noise reduction
-
--- 1. Create the Resource (The Noisy App)
-INSERT INTO resource (resource_id, platform_id, env_id, resource_type, name, namespace, owner, created_at, is_active) VALUES
-('res_noisy_app', 'k8s_cluster', 'prod', 'pod', 'noisy-logger-v1', 'default', 'dev_team', datetime('now', '-30 days'), 1);
-
--- 2. Create a "Daemon" Run (The FK Anchor)
--- We need this row to exist so the logs have a valid parent.
-INSERT INTO run (run_id, platform_id, env_id, resource_id, external_run_id, run_type, status, started_at, ended_at, message) VALUES
-('run_noise_daemon', 'k8s_cluster', 'prod', 'res_noisy_app', 'daemon-1', 'service', 'RUNNING', datetime('now', '-1 day'), NULL, 'Always-on logging service');
-
--- 3. Insert 50 repetitive warning logs attached to that run
--- Now we use 'run_noise_daemon' which satisfies the FK constraint.
-WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x<50)
-INSERT INTO log_record (log_id, severity_text, body, resource_id, run_id, time)
-SELECT 
-    'log_noise_' || x, 
-    'WARN', 
-    'DeprecationWarning: The "imp" module is deprecated in favor of "importlib".', 
-    'res_noisy_app', 
-    'run_noise_daemon',  -- <--- Matches the ID above
-    datetime('now', '-' || x || ' minutes')
-FROM cnt;
-
 -- ============================================================================
 -- SCENARIO 7: SLA Breach (Regulatory Report)
 -- ============================================================================
-
--- 1. Resource with EXPLICIT SLA (30 minutes)
 INSERT INTO resource (resource_id, platform_id, env_id, resource_type, external_id, name, namespace, owner, attributes_json, created_at, is_active) VALUES
 ('res_job_reg_report', 'databricks_prod', 'prod', 'job', 'job-reg-001', 'monthly_regulatory_report', 'compliance', 'compliance_team', '{"sla_runtime_mins": 30, "priority": "p0"}', datetime('now', '-1 year'), 1);
 
--- 2. Run 1: Good Run (20 mins) -> STARTED 25 hours ago, ENDED 24 hours 40 mins ago
 INSERT INTO run (run_id, platform_id, env_id, resource_id, external_run_id, run_type, status, started_at, ended_at, message) VALUES
-('run_reg_good', 'databricks_prod', 'prod', 'res_job_reg_report', 'run-reg-001', 'batch', 'SUCCESS', datetime('now', '-25 hours'), datetime('now', '-24 hours', '-40 minutes'), 'Succeeded');
-
--- 3. Run 2: SLA Breach (50 mins) -> STARTED 1 hour ago, ENDED 10 mins ago
-INSERT INTO run (run_id, platform_id, env_id, resource_id, external_run_id, run_type, status, started_at, ended_at, message) VALUES
+('run_reg_good', 'databricks_prod', 'prod', 'res_job_reg_report', 'run-reg-001', 'batch', 'SUCCESS', datetime('now', '-25 hours'), datetime('now', '-24 hours', '-40 minutes'), 'Succeeded'),
 ('run_reg_bad', 'databricks_prod', 'prod', 'res_job_reg_report', 'run-reg-002', 'batch', 'SUCCESS', datetime('now', '-60 minutes'), datetime('now', '-10 minutes'), 'Succeeded but slow');
 
 -- ============================================================================
 -- SCENARIO 8: Cost Anomalies (The "Creeping" Bill)
 -- ============================================================================
-
--- We use the existing 'metric_point' table to track daily cost.
 -- 1. Stable Cost: The K8s Cluster (Fixed size)
--- Costs $50/day flat.
 WITH RECURSIVE dates(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM dates WHERE x<30)
 INSERT INTO metric_point (metric_point_id, metric_name, metric_type, unit, value_number, resource_id, time)
 SELECT 
@@ -181,7 +151,6 @@ SELECT
 FROM dates;
 
 -- 2. Rising Cost: The Nightly Fact Job (Databricks)
--- Starts at $100, creeps up to $250 (Inefficient Scan or Data Growth)
 WITH RECURSIVE dates(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM dates WHERE x<30)
 INSERT INTO metric_point (metric_point_id, metric_name, metric_type, unit, value_number, resource_id, time)
 SELECT 
@@ -195,7 +164,6 @@ SELECT
 FROM dates;
 
 -- 3. Spiky Cost: The Silver-to-Gold Job (Retry Storm)
--- Usually $20, but spiked to $150 yesterday due to the schema failure retries.
 WITH RECURSIVE dates(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM dates WHERE x<30)
 INSERT INTO metric_point (metric_point_id, metric_name, metric_type, unit, value_number, resource_id, time)
 SELECT 
@@ -207,3 +175,56 @@ SELECT
     'res_job_silver_gold', 
     datetime('now', '-' || x || ' days')
 FROM dates;
+
+-- ============================================================================
+-- SCENARIO 9: Web/K8s Latency (Black Friday)
+-- ============================================================================
+
+-- 1. Resources (Added external_id to prevent unique constraint crash)
+INSERT INTO resource (resource_id, platform_id, env_id, resource_type, external_id, name, namespace, owner, is_active) VALUES
+('res_web_nginx', 'k8s_cluster', 'prod', 'service', 'svc-nginx-01', 'frontend-nginx', 'web', 'frontend_team', 1),
+('res_api_backend', 'k8s_cluster', 'prod', 'service', 'svc-api-01', 'checkout-api', 'backend', 'backend_team', 1),
+('res_db_postgres', 'aws_prod', 'prod', 'database', 'db-rds-009', 'users_db_primary', 'rds', 'dba_team', 1);
+
+-- 2. "Runs" (Representing Deployments)
+INSERT INTO run (run_id, platform_id, env_id, resource_id, external_run_id, run_type, status, started_at, ended_at, message) VALUES
+('deploy_api_v40', 'k8s_cluster', 'prod', 'res_api_backend', 'deploy-v40-1', 'deploy', 'SUCCESS', datetime('now', '-24 hours'), datetime('now', '-23 hours', '-50 minutes'), 'Deployed v40.1');
+
+-- 3. Metrics (The "Golden Signals")
+-- Latency spikes from 45ms (normal) to 2500ms (incident) on the API
+WITH RECURSIVE hours(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM hours WHERE x<10)
+INSERT INTO metric_point (metric_point_id, metric_name, metric_type, unit, value_number, resource_id, time)
+SELECT 
+    'met_lat_' || x, 
+    'latency_p95', 
+    'gauge', 
+    'ms', 
+    CASE WHEN x < 3 THEN 2500 ELSE 45 END, -- Recent spike in the last 2 hours
+    'res_api_backend', 
+    datetime('now', '-' || x || ' hours')
+FROM hours;
+
+-- 4. Incident (The Result)
+INSERT INTO incident (incident_id, env_id, title, severity, status, opened_at, summary, attributes_json) VALUES
+('inc_infra_001', 'prod', 'High Latency on Checkout API', 'HIGH', 'OPEN', datetime('now', '-2 hours'), 'P95 Latency > 2s. Checkout flow blocked.', '{"service": "res_api_backend"}');
+
+-- OPTIONAL: Add "Spam" logs to demonstrate noise reduction
+-- 1. Create the Resource (The Noisy App)
+INSERT INTO resource (resource_id, platform_id, env_id, resource_type, external_id, name, namespace, owner, created_at, is_active) VALUES
+('res_noisy_app', 'k8s_cluster', 'prod', 'pod', 'pod-noisy-001', 'noisy-logger-v1', 'default', 'dev_team', datetime('now', '-30 days'), 1);
+
+-- 2. Create a "Daemon" Run (The FK Anchor)
+INSERT INTO run (run_id, platform_id, env_id, resource_id, external_run_id, run_type, status, started_at, ended_at, message) VALUES
+('run_noise_daemon', 'k8s_cluster', 'prod', 'res_noisy_app', 'daemon-1', 'service', 'RUNNING', datetime('now', '-1 day'), NULL, 'Always-on logging service');
+
+-- 3. Insert 50 repetitive warning logs
+WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x<50)
+INSERT INTO log_record (log_id, severity_text, body, resource_id, run_id, time)
+SELECT 
+    'log_noise_' || x, 
+    'WARN', 
+    'DeprecationWarning: The "imp" module is deprecated in favor of "importlib".', 
+    'res_noisy_app', 
+    'run_noise_daemon',
+    datetime('now', '-' || x || ' minutes')
+FROM cnt;

@@ -44,6 +44,14 @@ VENDOR_DOCS_URLS = {
     "k8s": [
         "https://kubernetes.io/docs/concepts/services-networking/service/", # For Service/Connection failures
         "https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/",
+        "https://kubernetes.io/docs/concepts/services-networking/service/",
+        "https://kubernetes.io/docs/concepts/workloads/controllers/deployment/",
+        "https://kubernetes.io/docs/tasks/debug/debug-application/debug-pods/",
+    ],
+    "sre_principles": [
+        "https://sre.google/sre-book/service-level-objectives/",
+        "https://sre.google/sre-book/monitoring-distributed-systems/",
+        "https://sre.google/sre-book/golden-signals/" # The "Bible" for Infra SREs
     ],
     "airflow": [
         "https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/sensors.html", # For Empty File Sensor

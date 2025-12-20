@@ -198,11 +198,11 @@ PILLAR_CATALOG: List[Tuple[str, str, List[str], List[Tuple[str, str]]]] = [
         "Resource status, run failures, and pipeline reliability.",
         [
             "Failing Resources",
-            "Recent Run History",
+            "Run History",
             "Platform Availability",
+            "SLA Breaches"
         ],
         [
-            ("SLA Breaches", "Jobs exceeding promised completion times."),
             ("Zombie Resources", "Active resources with no recent runs."),
         ],
     ),
@@ -210,6 +210,7 @@ PILLAR_CATALOG: List[Tuple[str, str, List[str], List[Tuple[str, str]]]] = [
         "Observability",
         "Logs, metrics, and anomaly detection.",
         [
+            "Service Health (Golden Signals)",
             "Error Log Volume",
             "Metric Anomalies",
         ],

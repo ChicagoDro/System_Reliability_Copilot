@@ -35,14 +35,19 @@ _DOCS_INTENT_PATTERNS = [
 
 _DOCS_TOPIC_KEYWORDS = [
     "compute", "cluster", "autoscaling", "spot", "on-demand", "photon",
-    "warehouse", "serverless", "dbu", "pools", "policies", "job cluster"
+    "warehouse", "serverless", "dbu", "pools", "policies", "job cluster",
+    # NEW INFRA TERMS
+    "pod", "container", "ingress", "latency", "throughput", "iops", 
+    "load balancer", "vpc", "subnet", "firewall"
 ]
 
 _OPS_INTENT_PATTERNS = [
     r"\bfix\b", r"\bmitigat", r"\bresolve\b", r"\bpage\b", r"\bcontact\b",
     r"\bowner\b", r"\bsla\b", r"\bseverity\b", r"\bprocedure\b",
     r"\brunbook\b", r"\balert\b", r"\bescalat\b", r"\bdeadlock\b",
-    r"\btimeout\b", r"\bfailure\b",
+    r"\btimeout\b", r"\bfailure\b",r"\bfix\b",
+    # NEW INFRA ACTIONS
+    r"\bscale\b", r"\brollback\b", r"\brestart\b", r"\bdrain\b", r"\bdeploy\b"
 ]
 
 def _looks_like_docs_question(q: str) -> bool:

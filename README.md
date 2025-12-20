@@ -1,6 +1,5 @@
 # System Reliability Copilot
 
-
 ## Overview
 
 **System Reliability Copilot** is a deterministic, report-driven AI assistant for analyzing incidents, platform health, observability, and operational risk across complex data systems.
@@ -50,6 +49,7 @@ Each report is powered by explicit SQL and semantic meaning. The system is organ
 ### 3. Observability
 * **Error Log Volume**: Spike detection and "Signature" analysis of repetitive logs.
 * **Metric Anomalies**: Detection of data drops (e.g., 0 rows) or latency spikes.
+* **Service Health (Golden Signals)**: Latency, Traffic, Errors, and Saturation for infrastructure.
 
 ### 4. Cost & Efficiency
 * **Cloud Cost Overview**: Daily spend tracking, week-over-week trends, and top spender identification.
@@ -270,12 +270,13 @@ src/
     log_patterns.py         # Error signature logic
     metric_anomalies.py     # Data quality logic
     cost_overview.py        # Cloud spend logic
+    service_health.py       # Infra/Golden Signals logic
 
 ```
 
 ---
 
-## Why This Matters (Portfolio Value)
+## Why This Architecture?
 
 This project demonstrates how to build **SRE-grade AI tools** that:
 
