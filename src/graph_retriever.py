@@ -1,8 +1,7 @@
 # src/graph_retriever.py
 """
-Graph retriever for the Reliability Copilot (Phase 1 Compatible).
-Updates:
-- Serializes JSON attributes into LLM-readable text.
+Graph retriever for the Reliability Copilot.
+Enhanced to handle new node types: owner, change, baseline, sla, cost.
 """
 
 from __future__ import annotations

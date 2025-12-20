@@ -1,4 +1,7 @@
 # src/chat_orchestrator.py
+"""
+Enhanced Chat Orchestrator with support for ownership, change history, and baselines.
+"""
 from __future__ import annotations
 
 import json
@@ -24,7 +27,7 @@ from src.config import (
 from src.graph_retriever import GraphRAGRetriever
 
 # ---------------------------------------------------------------------------
-# Routing Heuristics
+# Routing Heuristics (Enhanced)
 # ---------------------------------------------------------------------------
 
 _DOCS_INTENT_PATTERNS = [
@@ -34,18 +37,14 @@ _DOCS_INTENT_PATTERNS = [
 ]
 
 _DOCS_TOPIC_KEYWORDS = [
-    # Databricks
     "compute", "cluster", "autoscaling", "spot", "on-demand", "photon",
     "warehouse", "serverless", "dbu", "pools", "policies", "job cluster",
     "schema evolution", "auto loader", "delta live tables",
-    # Snowflake
     "snowpipe", "time travel", "undrop", "clustering keys", "micro-partition",
     "credit usage", "cloud services",
-    # Kubernetes / Infra
     "pod", "container", "ingress", "latency", "throughput", "iops", 
     "load balancer", "vpc", "subnet", "firewall", "pvc", "eviction",
     "liveness", "readiness", "oomkilled", "crashloop",
-    # Airflow / dbt
     "sensor", "backfill", "xcom", "task instance", "incremental", "snapshot"
 ]
 
@@ -54,9 +53,25 @@ _OPS_INTENT_PATTERNS = [
     r"\bowner\b", r"\bsla\b", r"\bseverity\b", r"\bprocedure\b",
     r"\brunbook\b", r"\balert\b", r"\bescalat\b", r"\bdeadlock\b",
     r"\btimeout\b", r"\bfailure\b", r"\bfix\b",
-    # New Infra Actions
     r"\bscale\b", r"\brollback\b", r"\brestart\b", r"\bdrain\b", r"\bdeploy\b",
     r"\blog(s)?\b", r"\btrace(s)?\b", r"\bmetric(s)?\b"
+]
+
+# NEW: Patterns for ownership, change, and baseline queries
+_OWNERSHIP_PATTERNS = [
+    r"\bwho owns\b", r"\bowner\b", r"\boncall\b", r"\bresponsible\b",
+    r"\bteam\b", r"\bslack channel\b", r"\bpagerduty\b", r"\bescalate\b"
+]
+
+_CHANGE_PATTERNS = [
+    r"\bwhat changed\b", r"\brecent change(s)?\b", r"\bdeployment(s)?\b",
+    r"\bconfig change\b", r"\bschema change\b", r"\bwhen did.*change\b",
+    r"\bwho changed\b", r"\bbefore and after\b"
+]
+
+_BASELINE_PATTERNS = [
+    r"\bis this normal\b", r"\busual(ly)?\b", r"\bbaseline\b", r"\baverage\b",
+    r"\btypical(ly)?\b", r"\bhistorical\b", r"\bcompared to\b", r"\bp95\b", r"\bp50\b"
 ]
 
 def _looks_like_docs_question(q: str) -> bool:
@@ -69,6 +84,18 @@ def _looks_like_operational_question(q: str) -> bool:
     ql = q.lower().strip()
     return any(re.search(p, ql) for p in _OPS_INTENT_PATTERNS)
 
+def _looks_like_ownership_question(q: str) -> bool:
+    ql = q.lower().strip()
+    return any(re.search(p, ql) for p in _OWNERSHIP_PATTERNS)
+
+def _looks_like_change_question(q: str) -> bool:
+    ql = q.lower().strip()
+    return any(re.search(p, ql) for p in _CHANGE_PATTERNS)
+
+def _looks_like_baseline_question(q: str) -> bool:
+    ql = q.lower().strip()
+    return any(re.search(p, ql) for p in _BASELINE_PATTERNS)
+
 def _has_entity_anchor(q: str) -> bool:
     ql = q.lower()
     return any(
@@ -76,7 +103,6 @@ def _has_entity_anchor(q: str) -> bool:
         for token in [
             "job_id=", "run_id=", "query_id=", "warehouse_id=",
             "cluster_id=", "user_id=", "compute_type=", "incident_id=",
-            # Expanded Anchors
             "resource_id=", "dataset_id=", "rule_id=", "platform_id="
         ]
     )
@@ -212,21 +238,27 @@ def get_llm():
     raise ValueError(f"Unsupported LLM_PROVIDER: {provider}")
 
 # ---------------------------------------------------------------------------
-# Prompts
+# Prompts (Enhanced)
 # ---------------------------------------------------------------------------
 
-ASSISTANT_SYSTEM_PROMPT = """You are a Data Reliability Copilot.
-You answer questions using 3 distinct sources of context:
+ASSISTANT_SYSTEM_PROMPT = """You are a Data Reliability Copilot with deep operational context.
+You answer questions using FIVE distinct sources of truth:
 
 1. TELEMETRY: Real-world data about jobs, runs, and costs (the "what happened").
-2. VENDOR DOCS: Official documentation on how the platform works (the "theory").
-3. RUNBOOKS: Internal operational procedures, ownership, and fix instructions (the "playbook").
+2. VENDOR DOCS: Official documentation on how platforms work (the "theory").
+3. RUNBOOKS: Internal operational procedures and fix instructions (the "playbook").
+4. OWNERSHIP: Team assignments, oncall rotations, and escalation policies (the "who").
+5. CHANGE HISTORY: Recent deployments, config changes, and schema modifications (the "when").
+6. BASELINES: Historical performance norms and SLA targets (the "is this normal").
 
 Rules:
-- Prioritize RUNBOOKS for "how to fix", "who owns", or "SLA" questions.
-- Use TELEMETRY to confirm if the issue actually occurred.
-- Use VENDOR DOCS to explain technical concepts or limits.
-- If context is missing, admit it. Do not hallucinate runbook procedures.
+- For "who owns" questions: Prioritize OWNERSHIP data (team, slack channel, PagerDuty).
+- For "what changed" questions: Look for CHANGE HISTORY nodes showing recent modifications.
+- For "is this normal" questions: Compare current metrics against BASELINES (p50, p95).
+- For "how to fix" questions: Use RUNBOOKS for procedures.
+- For "why did it fail" questions: Use TELEMETRY + CHANGE HISTORY correlation.
+- Always cite which source you're using (e.g., "[Ownership]", "[Change History]", "[Baseline]").
+- If context is missing, admit it. Do not hallucinate procedures or ownership.
 """
 
 ASSISTANT_PROMPT_TEMPLATE = ChatPromptTemplate.from_messages(
@@ -236,12 +268,11 @@ ASSISTANT_PROMPT_TEMPLATE = ChatPromptTemplate.from_messages(
     ]
 )
 
-# Expanded Classifier Prompt to handle new entity types
 QUESTION_CLASSIFIER_PROMPT = PromptTemplate.from_template(
     """You are a classifier for a Reliability Copilot. Return JSON only.
 
 Classify the user's question into:
-- intent: one of ["global_aggregate", "global_topn", "other"]
+- intent: one of ["global_aggregate", "global_topn", "ownership", "change_history", "baseline_check", "other"]
 - entity_type: one of [
     "job", "run", "incident", "service", "pod", 
     "table", "database", "dag", "resource", "warehouse", "compute"
@@ -249,9 +280,10 @@ Classify the user's question into:
 
 Examples:
 - "How many jobs failed?" -> {{"intent": "global_aggregate", "entity_type": "job"}}
+- "Who owns the payment gateway?" -> {{"intent": "ownership", "entity_type": "service"}}
+- "What changed on res_job_nightly_fact recently?" -> {{"intent": "change_history", "entity_type": "job"}}
+- "Is this latency spike normal?" -> {{"intent": "baseline_check", "entity_type": "service"}}
 - "Show me the top 5 failing services" -> {{"intent": "global_topn", "entity_type": "service"}}
-- "What is the status of inc_003?" -> {{"intent": "other", "entity_type": "incident"}}
-- "Are there any active incidents?" -> {{"intent": "global_aggregate", "entity_type": "incident"}}
 
 Question: {question}
 Return JSON with keys intent and entity_type.
@@ -266,8 +298,8 @@ def build_graph_explanation(node_ids: List[str], retriever: GraphRAGRetriever) -
     if not node_ids:
         return "No graph nodes were retrieved."
     nodes = retriever.adj.nodes
-    lines = [f"Retrieved {len(node_ids)} graph nodes (showing up to 12):"]
-    for nid in node_ids[:12]:
+    lines = [f"Retrieved {len(node_ids)} graph nodes (showing up to 15):"]
+    for nid in node_ids[:15]:
         n = nodes.get(nid)
         if not n:
             lines.append(f"- {nid} | (missing node)")
@@ -276,8 +308,8 @@ def build_graph_explanation(node_ids: List[str], retriever: GraphRAGRetriever) -
         props = getattr(n, "properties", {}) or {}
         name = props.get("job_name") or props.get("title") or props.get("name") or nid
         lines.append(f"- {nid} | type={ntype} | name={name}")
-    if len(node_ids) > 12:
-        lines.append(f"... ({len(node_ids) - 12} more)")
+    if len(node_ids) > 15:
+        lines.append(f"... ({len(node_ids) - 15} more)")
     return "\n".join(lines)
 
 # ---------------------------------------------------------------------------
@@ -299,7 +331,7 @@ class PromptPackItem:
     prompt: str
 
 # ---------------------------------------------------------------------------
-# Main Orchestrator
+# Main Orchestrator (Enhanced)
 # ---------------------------------------------------------------------------
 
 class ReliabilityAssistant:
@@ -340,10 +372,6 @@ class ReliabilityAssistant:
 
     def _answer_global_aggregate(self, entity_type: str) -> ChatResult:
         entity_type = entity_type.lower()
-        # Count nodes in the graph that match the requested entity type
-        # Note: 'job', 'service', etc. are typically mapped to 'resource' nodes with a 'type' attribute
-        # or separate node types depending on your graph builder.
-        # This naive counter works if your graph nodes use specific types (e.g. 'incident').
         count = sum(1 for n in self.graph_retriever.adj.nodes.values() 
                     if getattr(n, "type", "").lower() == entity_type 
                     or (getattr(n, "type", "") == "resource" and entity_type in getattr(n, "properties", {}).get("name", "").lower()))
@@ -351,6 +379,73 @@ class ReliabilityAssistant:
         return ChatResult(
             answer=f"There are {count} {entity_type}(s) in the dataset.",
             graph_explanation=f"[deterministic] Counted nodes of type '{entity_type}'.",
+        )
+
+    def _answer_ownership_question(self, focus: Optional[dict] = None) -> ChatResult:
+        """Handle 'who owns' questions by searching for owner nodes."""
+        # Search for owner nodes
+        owner_hits = self.graph_retriever.search("owner team oncall slack pagerduty", limit=10, node_types={"owner"})
+        
+        if not owner_hits and not focus:
+            return ChatResult(answer="No ownership information found in the system.")
+        
+        # If focused on a specific resource, find its owner
+        if focus and focus.get("entity_id"):
+            resource_id = focus["entity_id"]
+            # Look for edges from resource to owner
+            resource_node = self.graph_retriever.get_node(f"resource::{resource_id}")
+            if resource_node:
+                neighbors = self.graph_retriever.neighbors(f"resource::{resource_id}")
+                owner_neighbors = [n for n in neighbors if "owner::" in n.get("id", "")]
+                if owner_neighbors:
+                    owner_id = owner_neighbors[0]["id"]
+                    owner_node = self.graph_retriever.get_node(owner_id)
+                    if owner_node:
+                        return ChatResult(
+                            answer=f"[Ownership] {owner_node.get('text', 'Owner information found')}",
+                            graph_explanation=f"Found owner node: {owner_id}"
+                        )
+        
+        # Generic ownership answer
+        owner_text = "\n\n".join([f"- {h.title}: {h.snippet}" for h in owner_hits[:5]])
+        return ChatResult(
+            answer=f"[Ownership] Found {len(owner_hits)} teams:\n\n{owner_text}",
+            graph_explanation=f"Retrieved {len(owner_hits)} owner nodes"
+        )
+
+    def _answer_change_history_question(self, focus: Optional[dict] = None) -> ChatResult:
+        """Handle 'what changed' questions by searching for change nodes."""
+        change_hits = self.graph_retriever.search("change config deployment schema", limit=10, node_types={"change"})
+        
+        if not change_hits:
+            return ChatResult(answer="No recent changes found in the system.")
+        
+        # Format changes chronologically
+        change_text = "\n\n".join([
+            f"- [{h.node_type}] {h.title}\n  {h.snippet[:200]}" 
+            for h in change_hits[:5]
+        ])
+        
+        return ChatResult(
+            answer=f"[Change History] Found {len(change_hits)} recent changes:\n\n{change_text}",
+            graph_explanation=f"Retrieved {len(change_hits)} change nodes"
+        )
+
+    def _answer_baseline_question(self, focus: Optional[dict] = None) -> ChatResult:
+        """Handle 'is this normal' questions by comparing against baselines."""
+        baseline_hits = self.graph_retriever.search("baseline p50 p95 average", limit=10, node_types={"baseline"})
+        
+        if not baseline_hits:
+            return ChatResult(answer="No baseline data found for comparison.")
+        
+        baseline_text = "\n\n".join([
+            f"- {h.title}: {h.snippet}" 
+            for h in baseline_hits[:5]
+        ])
+        
+        return ChatResult(
+            answer=f"[Baseline] Historical norms:\n\n{baseline_text}\n\nCompare current metrics against these baselines.",
+            graph_explanation=f"Retrieved {len(baseline_hits)} baseline nodes"
         )
 
     def _answer_global_usage_overview(self) -> ChatResult:
@@ -375,29 +470,39 @@ class ReliabilityAssistant:
         return out
 
     def answer(self, question: str, focus: Optional[dict] = None) -> ChatResult:
-        # 1. Deterministic Shortcuts (New Classification Logic)
+        # 1. Deterministic Shortcuts (Enhanced Classification)
         if _looks_like_usage_overview_question(question):
              return self._answer_global_usage_overview()
 
         classification = self._classify_question(question)
-        if classification.get("intent") == "global_aggregate" and classification.get("entity_type"):
+        intent = classification.get("intent")
+        
+        if intent == "global_aggregate" and classification.get("entity_type"):
             return self._answer_global_aggregate(classification["entity_type"])
+        
+        # NEW: Specialized handlers
+        if intent == "ownership" or _looks_like_ownership_question(question):
+            return self._answer_ownership_question(focus)
+        
+        if intent == "change_history" or _looks_like_change_question(question):
+            return self._answer_change_history_question(focus)
+        
+        if intent == "baseline_check" or _looks_like_baseline_question(question):
+            return self._answer_baseline_question(focus)
 
         # 2. Retrieve Contexts
         
-        # A) Telemetry (Graph)
-        # Force the focus entity into the search context
+        # A) Telemetry (Graph) - Force focus entity
         forced_seeds = []
         if focus and focus.get("entity_id") and focus.get("entity_type"):
-            # FIX: Use Double Colon separator for Graph Lookups
             forced_id = f"{focus['entity_type']}::{focus['entity_id']}"
             forced_seeds.append(forced_id)
 
         telemetry_docs, node_ids = self.graph_retriever.get_subgraph_for_query(
             query=question, 
-            seed_limit=4, 
-            depth=3, # UPDATED: Increased Depth to find Configs (Incident->Resource->Run->Config)
-            max_nodes=40
+            seed_limit=5,  # Increased from 4
+            depth=3, 
+            max_nodes=60  # Increased from 40
         )
 
         # Ensure forced seeds are present
@@ -423,7 +528,7 @@ class ReliabilityAssistant:
         # 3. Build Prompt Context
         context_str = self._render_docs(telemetry_docs, "TELEMETRY CONTEXT")
         context_str += self._render_docs(runbook_docs, "RUNBOOK CONTEXT (Internal Procedures)")
-        context_str += self._render_docs(vendor_docs, "VENDOR DOCS (Databricks)")
+        context_str += self._render_docs(vendor_docs, "VENDOR DOCS")
         
         # 4. Generate Explanation
         graph_explanation = build_graph_explanation(node_ids=node_ids, retriever=self.graph_retriever)

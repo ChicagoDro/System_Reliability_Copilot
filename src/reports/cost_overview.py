@@ -8,7 +8,6 @@ def load_cost_data(db_path: str, filters: dict) -> pd.DataFrame:
     import sqlite3
     conn = sqlite3.connect(db_path)
     
-    # Fetch 'daily_cost' metrics joined with resource metadata
     query = """
     SELECT 
         m.time, m.value_number as cost,
@@ -33,7 +32,6 @@ def render_cost(df: pd.DataFrame, filters: dict):
         st.info("No cost data available.")
         return
 
-    # 1. KPI Cards (Last 7 Days vs Previous 7 Days)
     last_date = df["date"].max()
     last_7 = df[df["date"] >= (last_date - pd.Timedelta(days=7))]
     prev_7 = df[(df["date"] < (last_date - pd.Timedelta(days=7))) & 
@@ -48,7 +46,6 @@ def render_cost(df: pd.DataFrame, filters: dict):
     col2.metric("Top Spender", last_7.groupby("resource_name")["cost"].sum().idxmax())
     col3.metric("Data Points", len(df))
 
-    # 2. Stacked Area Chart (Spend by Platform/Resource)
     st.subheader("Daily Spend Trend")
     daily_agg = df.groupby(["date", "resource_name", "platform"])["cost"].sum().reset_index()
     
@@ -59,7 +56,6 @@ def render_cost(df: pd.DataFrame, filters: dict):
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # 3. Top Spenders Table
     st.subheader("Resource Breakdown (Last 30 Days)")
     summary = df.groupby(["resource_name", "platform", "resource_type"])["cost"].agg(["sum", "mean", "max"]).reset_index()
     summary = summary.rename(columns={"sum": "total_cost", "mean": "avg_daily", "max": "peak_daily"})
@@ -76,7 +72,6 @@ def render_cost(df: pd.DataFrame, filters: dict):
     )
 
 def get_selections(df: pd.DataFrame, filters: dict) -> list[SelectionLike]:
-    # Unique resources found in the cost report
     resources = df[["resource_id", "resource_name", "platform"]].drop_duplicates()
     return [
         SelectionLike(
@@ -89,12 +84,25 @@ def get_selections(df: pd.DataFrame, filters: dict) -> list[SelectionLike]:
 
 def get_chips(sel: SelectionLike, filters: dict) -> list[Chip]:
     return [
-        Chip("cost:analyze", "💰 Analyze Spend", 
-             f"Analyze the cost trend for {sel.entity_id}. Is the increase linear (data growth) or sudden (inefficiency)?", 
-             group="Diagnose"),
-        Chip("cost:optimize", "📉 Reduce Bill", 
-             f"Consult the 'Databricks Cost Optimization Runbook' to find ways to lower the cost of {sel.entity_id}. Suggest spot instances or query tuning.", 
-             group="Optimize"),
+        Chip(
+            "cost:deep_dive",
+            "🔬 Cost Deep Dive",
+            "INVESTIGATE:cost_spike",
+            investigation_plan="cost_spike",
+            group="Diagnose"
+        ),
+        Chip(
+            "cost:analyze", 
+            "💰 Analyze Spend", 
+            f"Analyze the cost trend for {sel.entity_id}. Is the increase linear (data growth) or sudden (inefficiency)?", 
+            group="Diagnose"
+        ),
+        Chip(
+            "cost:optimize", 
+            "📉 Reduce Bill", 
+            f"Consult the 'Databricks Cost Optimization Runbook' to find ways to lower the cost of {sel.entity_id}. Suggest spot instances or query tuning.", 
+            group="Optimize"
+        ),
     ]
 
 REPORT = ReportSpec(

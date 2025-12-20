@@ -25,6 +25,7 @@ class Chip:
     prompt: str       # The prompt sent to the LLM when clicked
     group: str = "Diagnose" # "Understand", "Diagnose", "Optimize", "Monitor"
     focus: bool = True # Whether this action implies focusing on the selected item
+    investigation_plan: Optional[str] = None  # NEW: Link to investigation plan (e.g., "run_failure")
 
 
 @dataclass

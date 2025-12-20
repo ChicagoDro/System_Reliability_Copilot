@@ -13,6 +13,14 @@ from src.chat_orchestrator import ReliabilityAssistant
 from src.reports.base import SelectionLike
 from src.reports.registry import get_reports, get_report_map, get_default_report_key
 from src.prompts_deterministic import PROMPT_PACKS
+from src.investigation_engine import (
+    InvestigationEngine, 
+    get_investigation_plan,
+    PLAN_RUN_FAILURE,
+    PLAN_COST_SPIKE,
+    PLAN_SLA_BREACH,
+    PLAN_DATA_QUALITY
+)
 
 
 # ============================
@@ -29,6 +37,7 @@ class Chip:
     prompt: str
     focus: bool = True
     group: str = "Diagnose"
+    investigation_plan: Optional[str] = None  # NEW: Link to investigation plan
 
 
 GROUP_ORDER = ["Understand", "Diagnose", "Optimize", "Monitor"]
@@ -48,13 +57,12 @@ def _safe_slug(x: str) -> str:
 def _default_chips_for_selection(report_name: str, sel: SelectionLike) -> List[Chip]:
     """
     Deterministic baseline chips that ALWAYS appear for a selection.
-    Now includes 'Deep Dive' packs if available.
+    Now includes Deep Dive investigation chips.
     """
     et = str(sel.entity_type)
     eid = str(sel.entity_id)
     report_slug = report_name.lower()
 
-    # FIX: Made the prompt platform-agnostic (removed "Databricks usage telemetry")
     base: List[Chip] = [
         Chip(
             id=f"core:about:{_safe_slug(et)}:{_safe_slug(eid)}",
@@ -76,9 +84,54 @@ def _default_chips_for_selection(report_name: str, sel: SelectionLike) -> List[C
         ),
     ]
 
-    # --- Inject Deep Dive Packs based on Report Context ---
+    # --- Deep Dive Investigation Chips ---
     
-    # 1. SLA / Duration Reports
+    # 1. Run failures
+    if et == "run" or "fail" in report_slug or "error" in report_slug:
+        base.append(Chip(
+            id=f"investigate:run_failure:{_safe_slug(eid)}",
+            label="🔬 Deep Dive (9 steps)",
+            group="Diagnose",
+            prompt="INVESTIGATE:run_failure",
+            investigation_plan="run_failure",
+            focus=True
+        ))
+    
+    # 2. Cost spikes
+    if "cost" in report_slug or "spend" in report_slug:
+        base.append(Chip(
+            id=f"investigate:cost_spike:{_safe_slug(eid)}",
+            label="🔬 Cost Deep Dive",
+            group="Diagnose",
+            prompt="INVESTIGATE:cost_spike",
+            investigation_plan="cost_spike",
+            focus=True
+        ))
+    
+    # 3. SLA breaches
+    if "sla" in report_slug or "breach" in sel.label.lower():
+        base.append(Chip(
+            id=f"investigate:sla_breach:{_safe_slug(eid)}",
+            label="🔬 SLA Analysis",
+            group="Diagnose",
+            prompt="INVESTIGATE:sla_breach",
+            investigation_plan="sla_breach",
+            focus=True
+        ))
+    
+    # 4. Data quality
+    if "dq" in report_slug or "quality" in report_slug or et == "dq_result":
+        base.append(Chip(
+            id=f"investigate:data_quality:{_safe_slug(eid)}",
+            label="🔬 DQ Investigation",
+            group="Diagnose",
+            prompt="INVESTIGATE:data_quality",
+            investigation_plan="data_quality",
+            focus=True
+        ))
+
+    # --- Inject Prompt Packs ---
+    
     if "sla" in report_slug or "breach" in sel.label.lower():
         if "triage_sla_miss" in PROMPT_PACKS:
             base.append(Chip(
@@ -89,7 +142,6 @@ def _default_chips_for_selection(report_name: str, sel: SelectionLike) -> List[C
                 focus=True
             ))
 
-    # 2. Cost Reports
     if "cost" in report_slug or "spend" in report_slug:
         if "cost_anomaly_review" in PROMPT_PACKS:
             base.append(Chip(
@@ -100,7 +152,6 @@ def _default_chips_for_selection(report_name: str, sel: SelectionLike) -> List[C
                 focus=True
             ))
 
-    # 3. Incident Reports
     if "incident" in report_slug or et == "incident":
         if "incident_postmortem" in PROMPT_PACKS:
             base.append(Chip(
@@ -111,7 +162,6 @@ def _default_chips_for_selection(report_name: str, sel: SelectionLike) -> List[C
                 focus=True
             ))
 
-    # 4. Log / Error Reports
     if "log" in report_slug or "error" in report_slug:
         if "log_root_cause_analysis" in PROMPT_PACKS:
             base.append(Chip(
@@ -122,7 +172,6 @@ def _default_chips_for_selection(report_name: str, sel: SelectionLike) -> List[C
                 focus=True
             ))
 
-    # 5. Resource Failure Reports
     if "failing" in report_slug or "fail" in report_slug:
         if "resource_health_check" in PROMPT_PACKS:
             base.append(Chip(
@@ -132,7 +181,6 @@ def _default_chips_for_selection(report_name: str, sel: SelectionLike) -> List[C
                 prompt="PACK:resource_health_check",
                 focus=True
             ))
-    # ---------------------------------------------------------
 
     return base
 
@@ -146,6 +194,7 @@ def _render_chip_row(chips: List[Chip], key_prefix: str, columns: int = 3) -> No
         with cols[i % len(cols)]:
             if st.button(chip.label, key=f"{key_prefix}:{chip.id}"):
                 st.session_state.pending_prompt = chip.prompt
+                st.session_state.pending_investigation = chip.investigation_plan
                 st.rerun()
 
 
@@ -230,8 +279,8 @@ def _build_uncategorized_report_names(report_map: Dict[str, object]) -> List[str
 def _select_report(key: str) -> None:
     st.session_state.selected_report_key = key
     st.session_state.pending_prompt = None
+    st.session_state.pending_investigation = None
     st.session_state.selection = None
-    # CLEAR COMMENTARY ON REPORT CHANGE
     st.session_state.commentary = []
     st.rerun()
 
@@ -262,7 +311,6 @@ def _render_sidebar_report_nav(report_map: Dict[str, object]) -> None:
 
     for pillar, desc, active_idents, todo_items in PILLAR_CATALOG:
         if q and not matches(pillar) and not matches(desc):
-            # Shallow check for children matches
             has_match = False
             for ident in active_idents:
                 k = _resolve_report_key(ident, report_map)
@@ -318,6 +366,8 @@ def _render_sidebar_report_nav(report_map: Dict[str, object]) -> None:
 def init_state() -> None:
     if "assistant" not in st.session_state:
         st.session_state.assistant = ReliabilityAssistant.from_local()
+    if "investigation_engine" not in st.session_state:
+        st.session_state.investigation_engine = InvestigationEngine(st.session_state.assistant)
     if "selected_report_key" not in st.session_state:
         st.session_state.selected_report_key = get_default_report_key()
     if "filters" not in st.session_state:
@@ -328,6 +378,8 @@ def init_state() -> None:
         st.session_state.commentary = []
     if "pending_prompt" not in st.session_state:
         st.session_state.pending_prompt = None
+    if "pending_investigation" not in st.session_state:
+        st.session_state.pending_investigation = None
     if "debug_mode" not in st.session_state:
         st.session_state.debug_mode = False
     if "db_path" not in st.session_state:
@@ -343,15 +395,106 @@ def assistant() -> ReliabilityAssistant:
     return st.session_state.assistant
 
 
+def investigation_engine() -> InvestigationEngine:
+    return st.session_state.investigation_engine
+
+
+def run_investigation(plan_name: str, focus: Optional[Dict[str, str]] = None) -> None:
+    """
+    Execute a multi-step investigation and display results progressively.
+    """
+    # Map plan name to actual plan
+    plan_map = {
+        "run_failure": PLAN_RUN_FAILURE,
+        "cost_spike": PLAN_COST_SPIKE,
+        "sla_breach": PLAN_SLA_BREACH,
+        "data_quality": PLAN_DATA_QUALITY,
+    }
+    
+    plan = plan_map.get(plan_name)
+    if not plan:
+        st.error(f"Unknown investigation plan: {plan_name}")
+        return
+    
+    # Create progress container
+    progress_container = st.empty()
+    results_container = st.empty()
+    
+    with progress_container.container():
+        st.info(f"🔬 Starting {len(plan)} step investigation...")
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+    
+    # Execute each step
+    evidence_list = []
+    for i, step in enumerate(plan):
+        # Update progress
+        progress = (i + 1) / len(plan)
+        progress_bar.progress(progress)
+        status_text.text(f"Step {i+1}/{len(plan)}: {step.description}")
+        
+        # Add focus context to query
+        query = step.query
+        if focus:
+            query = f"{query}\nContext: {focus['entity_type']} = {focus['entity_id']}"
+        
+        # Execute query
+        result = assistant().answer(query, focus=focus)
+        
+        # Store evidence
+        evidence_list.append({
+            "step": step.name,
+            "description": step.description,
+            "finding": result.answer,
+            "timestamp": time.time()
+        })
+        
+        # Brief pause for UX
+        time.sleep(0.3)
+    
+    # Clear progress, show results
+    progress_container.empty()
+    
+    # Format investigation report
+    report_lines = [
+        f"# 🔬 Investigation Report: {plan_name.replace('_', ' ').title()}",
+        "",
+        f"**Completed**: {len(plan)} steps",
+        "",
+        "---",
+        ""
+    ]
+    
+    for i, evidence in enumerate(evidence_list, 1):
+        report_lines.append(f"## Step {i}: {evidence['description']}")
+        report_lines.append("")
+        report_lines.append(evidence['finding'])
+        report_lines.append("")
+        report_lines.append("---")
+        report_lines.append("")
+    
+    report_md = "\n".join(report_lines)
+    
+    # Add to commentary
+    st.session_state.commentary.append({
+        "prompt": f"🔬 **Deep Dive Investigation**: {plan_name}",
+        "response": report_md
+    })
+
+
 def run_commentary(prompt: str) -> None:
     focus = None
     sel = st.session_state.selection
     if sel is not None:
         focus = {"entity_type": sel.entity_type, "entity_id": sel.entity_id}
 
-    # =========================================================================
-    # Handle Multi-Step Prompt Packs ("Deep Dive")
-    # =========================================================================
+    # Check if this is an investigation request
+    if prompt.startswith("INVESTIGATE:"):
+        plan_name = prompt.split(":", 1)[1]
+        run_investigation(plan_name, focus=focus)
+        return
+
+    # Handle Multi-Step Prompt Packs
     if prompt.startswith("PACK:"):
         pack_key = prompt.split(":", 1)[1]
         if pack_key in PROMPT_PACKS:
@@ -382,7 +525,6 @@ def run_commentary(prompt: str) -> None:
             
             progress_msg.toast(f"✅ Deep Dive Complete: {pack.name}", icon="🏁")
             return
-    # =========================================================================
 
     # Standard Single-Shot Prompt
     result = assistant().answer(prompt, focus=focus)
@@ -424,7 +566,15 @@ def render_action_chips(report, sel: SelectionLike) -> None:
         rc_id = getattr(rc, "id", None)
         stable_id = rc_id or f"report:{_safe_slug(report.key)}:{_safe_slug(sel.entity_type)}:{_safe_slug(sel.entity_id)}:{idx}"
         grp = getattr(rc, "group", None) or "Diagnose"
-        report_chips.append(Chip(id=stable_id, label=rc.label, prompt=rc.prompt, focus=getattr(rc, "focus", True), group=grp))
+        inv_plan = getattr(rc, "investigation_plan", None)
+        report_chips.append(Chip(
+            id=stable_id, 
+            label=rc.label, 
+            prompt=rc.prompt, 
+            focus=getattr(rc, "focus", True), 
+            group=grp,
+            investigation_plan=inv_plan
+        ))
 
     core_chips = _default_chips_for_selection(report.name, sel)
     seen = set()
@@ -460,7 +610,7 @@ if st.session_state.selected_report_key not in report_map:
 current_report = report_map[st.session_state.selected_report_key]
 
 st.title("🛡️ Reliability Copilot")
-st.caption("Deterministic reporting + contextual AI commentary")
+st.caption("Deterministic reporting + contextual AI commentary + deep investigations")
 
 with st.sidebar:
     _render_sidebar_report_nav(report_map)
@@ -469,11 +619,12 @@ with st.sidebar:
     st.caption(f"DB: `{st.session_state.db_path}`")
     if st.button("Clear selection"):
         st.session_state.selection = None
-        st.session_state.commentary = []  # Added clearing here too
+        st.session_state.commentary = []
         st.rerun()
     if st.button("Clear commentary"):
         st.session_state.commentary = []
         st.session_state.pending_prompt = None
+        st.session_state.pending_investigation = None
         st.rerun()
 
 viz_col, comm_col = st.columns([2.2, 1.0], gap="large")
@@ -492,9 +643,7 @@ with viz_col:
             with cols[i % 3]:
                 if st.button(sel.label, key=sel_key):
                     st.session_state.selection = sel
-                    # === CLEAR COMMENTARY ON SELECTION CHANGE ===
                     st.session_state.commentary = []
-                    # ============================================
                     st.session_state.pending_prompt = f"Tell me more about {sel.entity_type} {sel.entity_id}."
                     st.rerun()
 
@@ -541,6 +690,16 @@ with comm_col:
         prompt = f"{free.strip()}\n\nContext:\n" + "\n".join(context)
         st.session_state.pending_prompt = prompt
         st.rerun()
+
+# Execute pending prompts/investigations
+if st.session_state.pending_investigation:
+    plan_name = st.session_state.pending_investigation
+    st.session_state.pending_investigation = None
+    focus = None
+    if st.session_state.selection:
+        focus = {"entity_type": st.session_state.selection.entity_type, "entity_id": st.session_state.selection.entity_id}
+    run_investigation(plan_name, focus)
+    st.rerun()
 
 if st.session_state.pending_prompt:
     p = st.session_state.pending_prompt

@@ -526,3 +526,218 @@ FROM resource_change rc
 WHERE rc.resource_id = 'res_job_nightly_fact'
 AND rc.changed_at > datetime('now', '-7 days')
 ORDER BY rc.changed_at DESC;
+
+-- sql/seed_reliability_data_enhanced_v2.sql
+-- ENHANCED SAMPLE DATA for Investigation Agent
+-- Adds: Rich logs with stack traces, correlated metrics, warning progression
+
+-- =============================================================================
+-- ENHANCEMENT 1: Rich Log Progressions (Warning → Error chains)
+-- =============================================================================
+
+-- Scenario 1: Databricks OOM - Add warning signs BEFORE the crash
+DELETE FROM log_record WHERE run_id = 'run_fact_101';
+
+INSERT INTO log_record (log_id, severity_text, body, resource_id, run_id, time) VALUES
+-- T-50 min: First warning
+('log_fact_warn_01', 'WARN', 'GC overhead limit approaching. Heap usage: 68% (2.7GB / 4GB). Stage: data ingestion.', 
+ 'res_job_nightly_fact', 'run_fact_101', datetime('now', '-2 hours', '-50 minutes')),
+
+-- T-45 min: Memory pressure increasing
+('log_fact_warn_02', 'WARN', 'Executor 3 lost heartbeat. Attempting to reconnect. Last seen: 90 seconds ago.', 
+ 'res_job_nightly_fact', 'run_fact_101', datetime('now', '-2 hours', '-45 minutes')),
+
+-- T-35 min: Shuffle performance degrading
+('log_fact_warn_03', 'WARN', 'Stage 2 shuffle write slow: 25 MB/s (expected: 100 MB/s). Possible disk contention or network saturation.', 
+ 'res_job_nightly_fact', 'run_fact_101', datetime('now', '-2 hours', '-35 minutes')),
+
+-- T-30 min: Critical memory warning
+('log_fact_warn_04', 'ERROR', 'Executor 15 lost heartbeat permanently. Block manager scrambling. Memory usage: 89% (3.56GB / 4GB).', 
+ 'res_job_nightly_fact', 'run_fact_101', datetime('now', '-2 hours', '-30 minutes')),
+
+-- T-15 min: GC thrashing
+('log_fact_error_01', 'ERROR', 'GC pause time exceeding 2 seconds. Application stalling. Heap: 3.8GB / 4GB used.', 
+ 'res_job_nightly_fact', 'run_fact_101', datetime('now', '-2 hours', '-15 minutes')),
+
+-- T-10 min: Final error with full stack trace
+('log_fact_error_02', 'FATAL', 
+ 'java.lang.OutOfMemoryError: Java heap space
+  at org.apache.spark.sql.catalyst.expressions.GeneratedClass$GeneratedIteratorForCodegenStage3.processNext(Unknown Source)
+  at org.apache.spark.sql.execution.BufferedRowIterator.hasNext(BufferedRowIterator.java:43)
+  at org.apache.spark.sql.execution.WholeStageCodegenExec$$anon$1.hasNext(WholeStageCodegenExec.scala:760)
+  at org.apache.spark.sql.execution.aggregate.HashAggregateExec$$anon$2.hasNext(HashAggregateExec.scala:537)
+  
+Container killed by YARN for exceeding memory limits.
+Driver total memory: 4096 MB
+Driver used memory: 4150 MB (101.3%)
+Exit code: 137
+
+Suspected cause: Insufficient driver memory for aggregation stage with 5M input rows.
+Last successful run: 2024-12-10 with 2M rows and 16GB driver.',
+ 'res_job_nightly_fact', 'run_fact_101', datetime('now', '-2 hours', '-10 minutes'));
+
+-- =============================================================================
+-- ENHANCEMENT 2: Correlated Metrics (Show degradation over time)
+-- =============================================================================
+
+-- Delete sparse metrics, add time-series progression
+DELETE FROM metric_point WHERE run_id = 'run_fact_101' AND metric_name = 'jvm_heap_usage';
+
+-- Memory usage climbing steadily
+INSERT INTO metric_point (metric_point_id, resource_id, run_id, metric_name, metric_type, unit, value_number, time) VALUES
+('met_jvm_series_01', 'res_job_nightly_fact', 'run_fact_101', 'jvm_heap_usage_percent', 'gauge', 'percent', 45, datetime('now', '-2 hours', '-50 minutes')),
+('met_jvm_series_02', 'res_job_nightly_fact', 'run_fact_101', 'jvm_heap_usage_percent', 'gauge', 'percent', 52, datetime('now', '-2 hours', '-45 minutes')),
+('met_jvm_series_03', 'res_job_nightly_fact', 'run_fact_101', 'jvm_heap_usage_percent', 'gauge', 'percent', 61, datetime('now', '-2 hours', '-40 minutes')),
+('met_jvm_series_04', 'res_job_nightly_fact', 'run_fact_101', 'jvm_heap_usage_percent', 'gauge', 'percent', 68, datetime('now', '-2 hours', '-35 minutes')),
+('met_jvm_series_05', 'res_job_nightly_fact', 'run_fact_101', 'jvm_heap_usage_percent', 'gauge', 'percent', 77, datetime('now', '-2 hours', '-30 minutes')),
+('met_jvm_series_06', 'res_job_nightly_fact', 'run_fact_101', 'jvm_heap_usage_percent', 'gauge', 'percent', 85, datetime('now', '-2 hours', '-25 minutes')),
+('met_jvm_series_07', 'res_job_nightly_fact', 'run_fact_101', 'jvm_heap_usage_percent', 'gauge', 'percent', 89, datetime('now', '-2 hours', '-20 minutes')),
+('met_jvm_series_08', 'res_job_nightly_fact', 'run_fact_101', 'jvm_heap_usage_percent', 'gauge', 'percent', 94, datetime('now', '-2 hours', '-15 minutes')),
+('met_jvm_series_09', 'res_job_nightly_fact', 'run_fact_101', 'jvm_heap_usage_percent', 'gauge', 'percent', 98, datetime('now', '-2 hours', '-12 minutes')),
+('met_jvm_series_10', 'res_job_nightly_fact', 'run_fact_101', 'jvm_heap_usage_percent', 'gauge', 'percent', 101, datetime('now', '-2 hours', '-10 minutes'));
+
+-- GC pressure
+INSERT INTO metric_point (metric_point_id, resource_id, run_id, metric_name, metric_type, unit, value_number, time) VALUES
+('met_gc_01', 'res_job_nightly_fact', 'run_fact_101', 'gc_pause_time_ms', 'gauge', 'ms', 120, datetime('now', '-2 hours', '-30 minutes')),
+('met_gc_02', 'res_job_nightly_fact', 'run_fact_101', 'gc_pause_time_ms', 'gauge', 'ms', 450, datetime('now', '-2 hours', '-20 minutes')),
+('met_gc_03', 'res_job_nightly_fact', 'run_fact_101', 'gc_pause_time_ms', 'gauge', 'ms', 1200, datetime('now', '-2 hours', '-15 minutes')),
+('met_gc_04', 'res_job_nightly_fact', 'run_fact_101', 'gc_pause_time_ms', 'gauge', 'ms', 2500, datetime('now', '-2 hours', '-12 minutes'));
+
+-- Input data volume (THE SMOKING GUN for data volume growth)
+INSERT INTO metric_point (metric_point_id, resource_id, run_id, metric_name, metric_type, unit, value_number, time) VALUES
+('met_input_vol_01', 'res_job_nightly_fact', 'run_fact_100', 'input_record_count', 'gauge', 'count', 2000000, datetime('now', '-26 hours')),
+('met_input_vol_02', 'res_job_nightly_fact', 'run_fact_101', 'input_record_count', 'gauge', 'count', 5200000, datetime('now', '-2 hours', '-50 minutes'));
+
+-- =============================================================================
+-- ENHANCEMENT 3: Cross-Platform Cascade Incident
+-- =============================================================================
+
+-- Add a cascade failure: Databricks OOM → dbt waits → Airflow times out → Snowflake stale
+INSERT INTO incident (incident_id, env_id, title, severity, status, opened_at, summary, attributes_json) VALUES
+('inc_cascade_001', 'prod', 'Cross-Platform Pipeline Cascade', 'CRITICAL', 'OPEN', 
+ datetime('now', '-2 hours'), 
+ 'Databricks nightly_fact job OOM caused dbt to wait indefinitely, which caused Airflow sensor timeout, which left Snowflake customers table stale for 2+ hours. Regulatory report blocked.',
+ json('{"affected_platforms": ["databricks", "dbt", "airflow", "snowflake"], "cascade_depth": 4, "mttr_target_minutes": 60, "estimated_impact_usd": 50000, "root_cause_category": "capacity"}'));
+
+-- Link all affected resources
+INSERT INTO incident_resource (incident_id, resource_id, relation) VALUES
+('inc_cascade_001', 'res_job_nightly_fact', 'ROOT_CAUSE'),
+('inc_cascade_001', 'res_tbl_fact_daily', 'BLOCKED'),
+('inc_cascade_001', 'res_dbt_kpis', 'WAITING'),
+('inc_cascade_001', 'res_af_vendor_dag', 'TIMEOUT'),
+('inc_cascade_001', 'res_tbl_customers', 'STALE'),
+('inc_cascade_001', 'res_job_reg_report', 'SLA_BREACH');
+
+-- =============================================================================
+-- ENHANCEMENT 4: K8s Service Crash - Add diagnostic context
+-- =============================================================================
+
+DELETE FROM log_record WHERE run_id = 'run_deploy_v45';
+
+INSERT INTO log_record (log_id, severity_text, body, resource_id, run_id, time) VALUES
+-- Before crash: Connection pool warnings
+('log_k8s_warn_01', 'WARN', 'Database connection pool at 80% capacity (8/10 connections). Response time degrading.', 
+ 'res_svc_payments', 'run_deploy_v45', datetime('now', '-4 hours', '-20 minutes')),
+
+('log_k8s_warn_02', 'WARN', 'Memory usage: 480 MB / 512 MB (94%). Heap fragmentation detected.', 
+ 'res_svc_payments', 'run_deploy_v45', datetime('now', '-4 hours', '-15 minutes')),
+
+-- The crash
+('log_k8s_error_01', 'FATAL', 
+ 'java.lang.OutOfMemoryError: unable to create new native thread
+  at java.lang.Thread.start0(Native Method)
+  at java.lang.Thread.start(Thread.java:717)
+  at java.util.concurrent.ThreadPoolExecutor.addWorker(ThreadPoolExecutor.java:957)
+  
+Container memory limit: 512 MB
+Container actual usage: 540 MB
+Exit code: 137 (OOMKilled)
+
+Suspected cause: Connection pool exhausted due to database slow queries. 
+Each connection holds ~40MB. 10 connections = 400MB + 100MB heap = 500MB exceeds limit.
+
+Recommendation: 
+- Short term: Scale replicas 3→5 to distribute load
+- Medium term: Add PgBouncer connection pooler
+- Long term: Increase container memory to 1GB', 
+ 'res_svc_payments', 'run_deploy_v45', datetime('now', '-4 hours', '-5 minutes'));
+
+-- Add database slow query metrics (the ACTUAL root cause)
+INSERT INTO metric_point (metric_point_id, resource_id, metric_name, metric_type, unit, value_number, time) VALUES
+('met_db_slow_01', 'res_db_postgres', 'query_p95_latency_ms', 'gauge', 'ms', 2500, datetime('now', '-4 hours', '-20 minutes')),
+('met_db_slow_02', 'res_db_postgres', 'active_connections', 'gauge', 'count', 95, datetime('now', '-4 hours', '-15 minutes')),
+('met_db_slow_03', 'res_db_postgres', 'connection_wait_time_ms', 'gauge', 'ms', 5000, datetime('now', '-4 hours', '-10 minutes'));
+
+-- =============================================================================
+-- ENHANCEMENT 5: Snowflake Data Loss - Add recovery attempt logs
+-- =============================================================================
+
+INSERT INTO log_record (log_id, severity_text, body, resource_id, time) VALUES
+('log_sf_recovery_01', 'INFO', 'Attempting data recovery using Time Travel. Target timestamp: 2024-12-18 08:00:00', 
+ 'res_tbl_customers', datetime('now', '-10 hours', '-5 minutes')),
+
+('log_sf_recovery_02', 'ERROR', 
+'UNDROP TABLE customers_master failed.
+Error: Time Travel data is not available for the specified time.
+Reason: Retention period (1 day) has expired. 
+Table was dropped 2 days ago at 2024-12-16 10:23:45.
+
+Time Travel retention: 1 day (Standard Edition)
+Time since drop: 2 days, 14 hours
+Data loss: PERMANENT (10,500 rows)
+
+Recovery options:
+1. Check if backups exist in external storage (S3/GCS)
+2. Rebuild from source systems (if available)
+3. Upgrade to Enterprise Edition (90-day Time Travel) to prevent future incidents
+
+Business impact: P0 - Customer master data unavailable. All downstream analytics blocked.', 
+ 'res_tbl_customers', datetime('now', '-10 hours'));
+
+-- =============================================================================
+-- ENHANCEMENT 6: Add "Near Miss" Scenario (Warning but no failure)
+-- =============================================================================
+
+-- This shows the system catching issues BEFORE they become incidents
+INSERT INTO run (run_id, platform_id, env_id, resource_id, compute_config_id, run_type, status, started_at, ended_at, message) VALUES
+('run_fact_102', 'databricks_prod', 'prod', 'res_job_nightly_fact', 'cfg_dbx_small', 'batch', 'SUCCESS', 
+ datetime('now', '-30 minutes'), datetime('now', '-10 minutes'), 
+ 'Succeeded with warnings: Memory usage peaked at 92%. Consider upgrading cluster size.');
+
+INSERT INTO log_record (log_id, severity_text, body, resource_id, run_id, time) VALUES
+('log_near_miss_01', 'WARN', 'Memory usage peaked at 92% (3.68GB / 4GB). This is close to the 95% threshold for OOM risk. Input rows: 4.8M. Recommend monitoring if input continues to grow.', 
+ 'res_job_nightly_fact', 'run_fact_102', datetime('now', '-15 minutes'));
+
+INSERT INTO metric_point (metric_point_id, resource_id, run_id, metric_name, metric_type, unit, value_number, time) VALUES
+('met_near_miss_01', 'res_job_nightly_fact', 'run_fact_102', 'jvm_heap_usage_percent', 'gauge', 'percent', 92, datetime('now', '-15 minutes')),
+('met_near_miss_02', 'res_job_nightly_fact', 'run_fact_102', 'input_record_count', 'gauge', 'count', 4800000, datetime('now', '-25 minutes'));
+
+-- =============================================================================
+-- ENHANCEMENT 7: Add Diagnostic Metrics for ALL Scenarios
+-- =============================================================================
+
+-- SLA Breach: Add stage-level breakdown
+INSERT INTO metric_point (metric_point_id, resource_id, run_id, metric_name, metric_type, unit, value_number, time) VALUES
+('met_stage_01', 'res_job_reg_report', 'run_reg_15', 'stage_1_duration_seconds', 'gauge', 'seconds', 300, datetime('now', '-12 hours')),
+('met_stage_02', 'res_job_reg_report', 'run_reg_15', 'stage_2_duration_seconds', 'gauge', 'seconds', 1800, datetime('now', '-12 hours')),  -- This stage is 10x slower!
+('met_stage_03', 'res_job_reg_report', 'run_reg_15', 'stage_3_duration_seconds', 'gauge', 'seconds', 600, datetime('now', '-12 hours'));
+
+-- Latency Spike: Add request queue depth
+INSERT INTO metric_point (metric_point_id, resource_id, metric_name, metric_type, unit, value_number, time) VALUES
+('met_queue_01', 'res_api_backend', 'request_queue_depth', 'gauge', 'count', 15, datetime('now', '-4 hours')),
+('met_queue_02', 'res_api_backend', 'request_queue_depth', 'gauge', 'count', 45, datetime('now', '-3 hours')),
+('met_queue_03', 'res_api_backend', 'request_queue_depth', 'gauge', 'count', 120, datetime('now', '-2 hours')),
+('met_queue_04', 'res_api_backend', 'request_queue_depth', 'gauge', 'count', 8, datetime('now', '-1 hour'));
+
+-- =============================================================================
+-- VERIFICATION: Ensure all scenarios have complete evidence chains
+-- =============================================================================
+
+-- Query to verify OOM scenario has all pieces
+SELECT 'OOM Evidence Chain' as test,
+  (SELECT COUNT(*) FROM log_record WHERE run_id = 'run_fact_101') as log_count,
+  (SELECT COUNT(*) FROM metric_point WHERE run_id = 'run_fact_101') as metric_count,
+  (SELECT COUNT(*) FROM resource_change WHERE resource_id = 'res_job_nightly_fact') as change_count,
+  (SELECT COUNT(*) FROM cost_record WHERE run_id = 'run_fact_101') as cost_count;
+
+-- Expected: log_count >= 5, metric_count >= 15, change_count >= 1, cost_count >= 1

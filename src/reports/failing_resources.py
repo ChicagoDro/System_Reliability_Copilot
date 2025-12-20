@@ -10,7 +10,8 @@ def load_failing(db_path: str, filters: dict) -> pd.DataFrame:
     SELECT 
         r.resource_id, r.name, r.resource_type, r.platform_id,
         COUNT(run.run_id) as failure_count,
-        MAX(run.ended_at) as last_failure
+        MAX(run.ended_at) as last_failure,
+        MAX(run.run_id) as last_failed_run_id
     FROM resource r
     JOIN run ON r.resource_id = run.resource_id
     WHERE run.status != 'SUCCESS'
@@ -29,7 +30,6 @@ def render_failing(df: pd.DataFrame, filters: dict):
 
     st.warning(f"Found {len(df)} resources with recent failures.")
     
-    # FIX: Cast the max value to a standard Python int to avoid JSON serialization errors
     max_fails = int(df["failure_count"].max()) if not df.empty else 10
 
     st.dataframe(
@@ -62,12 +62,25 @@ def get_selections(df: pd.DataFrame, filters: dict) -> list[SelectionLike]:
 
 def get_chips(sel: SelectionLike, filters: dict) -> list[Chip]:
     return [
-        Chip("res:debug", "🐞 Debug Last Run", 
-             f"Analyze the logs of the last failed run for resource {sel.entity_id}. What is the error message?", 
-             group="Diagnose"),
-        Chip("res:owner", "👤 Find Owner", 
-             f"Who owns resource {sel.entity_id}? Check metadata and suggest who to page.", 
-             group="Understand"),
+        Chip(
+            "res:deep_dive", 
+            "🔬 Deep Dive (9 steps)", 
+            "INVESTIGATE:run_failure",
+            investigation_plan="run_failure",
+            group="Diagnose"
+        ),
+        Chip(
+            "res:debug", 
+            "🐞 Debug Last Run", 
+            f"Analyze the logs of the last failed run for resource {sel.entity_id}. What is the error message?", 
+            group="Diagnose"
+        ),
+        Chip(
+            "res:owner", 
+            "👤 Find Owner", 
+            f"Who owns resource {sel.entity_id}? Check metadata and suggest who to page.", 
+            group="Understand"
+        ),
     ]
 
 REPORT = ReportSpec(
