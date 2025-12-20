@@ -240,3 +240,289 @@ INSERT INTO incident_resource (incident_id, resource_id, relation) VALUES
 ('inc_005', 'res_job_silver_gold', 'AFFECTS'),
 ('inc_006', 'res_dbt_kpis', 'AFFECTS'),
 ('inc_infra_001', 'res_api_backend', 'AFFECTS');
+
+-- sql/seed_reliability_data_enhanced.sql
+-- Enhanced version with rich graph context
+-- Add this AFTER your existing seed data
+
+-- ============================================================================
+-- ENHANCEMENT 1: Comprehensive Lineage (The Missing Backbone)
+-- ============================================================================
+
+-- Add intermediate table resources that were implied but missing
+INSERT INTO resource (resource_id, platform_id, env_id, resource_type, external_id, name, namespace, owner, attributes_json, is_active) VALUES
+('res_tbl_raw_events', 'snowflake_dw', 'prod', 'table', 'db.raw.events', 'raw_events', 'raw', 'data_eng', '{"retention_days": 7}', 1),
+('res_tbl_fact_daily', 'snowflake_dw', 'prod', 'table', 'db.analytics.fact_daily', 'fact_aggregates_daily', 'analytics', 'data_eng', '{"retention_days": 365}', 1),
+('res_tbl_vendor_staging', 'snowflake_dw', 'prod', 'table', 'db.staging.vendor_feed', 'vendor_staging', 'staging', 'data_eng', '{}', 1),
+('res_ext_vendor_sftp', 'aws_prod', 'prod', 'external_system', 'sftp://vendor.com', 'Vendor SFTP Server', 'external', 'vendor', '{}', 1);
+
+-- DATA LINEAGE for res_job_nightly_fact (The OOM Job)
+INSERT INTO lineage_edge (edge_id, env_id, src_resource_id, dst_resource_id, relation_type) VALUES
+-- Inputs (Root Cause Surface Area)
+('edge_fact_in_1', 'prod', 'res_tbl_raw_events', 'res_job_nightly_fact', 'FEEDS'),
+('edge_fact_in_2', 'prod', 'res_tbl_customers', 'res_job_nightly_fact', 'FEEDS'),
+
+-- Output
+('edge_fact_out_1', 'prod', 'res_job_nightly_fact', 'res_tbl_fact_daily', 'PRODUCES'),
+
+-- Downstream Impact Chain
+('edge_fact_out_2', 'prod', 'res_tbl_fact_daily', 'res_dbt_kpis', 'FEEDS'),
+
+-- Regulatory Report depends on fact table
+('edge_reg_in_1', 'prod', 'res_tbl_fact_daily', 'res_job_reg_report', 'FEEDS');
+
+-- AIRFLOW → dbt → DATABRICKS Pipeline
+INSERT INTO lineage_edge (edge_id, env_id, src_resource_id, dst_resource_id, relation_type) VALUES
+('edge_pipe_1', 'prod', 'res_ext_vendor_sftp', 'res_af_vendor_dag', 'FEEDS'),
+('edge_pipe_2', 'prod', 'res_af_vendor_dag', 'res_tbl_vendor_staging', 'PRODUCES'),
+('edge_pipe_3', 'prod', 'res_tbl_vendor_staging', 'res_dbt_kpis', 'FEEDS');
+
+-- K8S SERVICE DEPENDENCIES
+INSERT INTO lineage_edge (edge_id, env_id, src_resource_id, dst_resource_id, relation_type) VALUES
+-- Frontend → Backend → Payments → Database
+('edge_web_1', 'prod', 'res_web_nginx', 'res_api_backend', 'CALLS'),
+('edge_api_1', 'prod', 'res_api_backend', 'res_svc_payments', 'CALLS'),
+('edge_pay_1', 'prod', 'res_svc_payments', 'res_db_postgres', 'WRITES_TO'),
+('edge_api_2', 'prod', 'res_api_backend', 'res_db_postgres', 'READS_FROM');
+
+-- ============================================================================
+-- ENHANCEMENT 2: SLA Policies (Currently Empty!)
+-- ============================================================================
+
+INSERT INTO sla_policy (sla_id, resource_id, max_duration_seconds, max_cost_usd, availability_target, attributes_json) VALUES
+-- CRITICAL JOBS (P0)
+('sla_001', 'res_job_nightly_fact', 3600, 150.00, 0.995, json('{"business_impact": "P0 - blocks regulatory reporting", "oncall_team": "data-engineering", "sla_window": "00:00-06:00 UTC", "estimated_downtime_cost_per_hour_usd": 25000}')),
+
+('sla_002', 'res_job_reg_report', 1800, NULL, 0.99, json('{"business_impact": "P0 - SEC filing deadline 8AM EST", "oncall_team": "compliance-team", "escalation_after_minutes": 15, "executive_notification": true}')),
+
+-- SERVICES (P0 - Revenue Critical)
+('sla_003', 'res_svc_payments', NULL, NULL, 0.9999, json('{"business_impact": "P0 - payment processing", "max_latency_p95_ms": 200, "oncall_team": "backend-team", "estimated_downtime_cost_per_minute_usd": 5000}')),
+
+('sla_004', 'res_api_backend', NULL, NULL, 0.999, json('{"business_impact": "P1 - customer checkout", "max_latency_p95_ms": 500, "oncall_team": "backend-team"}')),
+
+-- DATA ASSETS
+('sla_005', 'res_tbl_customers', NULL, NULL, NULL, json('{"business_impact": "P0 - master data", "max_staleness_hours": 1, "min_row_count": 10000, "dq_checks": ["not_null", "unique_id"]}')),
+
+('sla_006', 'res_tbl_fact_daily', NULL, NULL, NULL, json('{"business_impact": "P1 - analytics dependency", "max_staleness_hours": 4, "min_row_count": 1000}'));
+
+-- ============================================================================
+-- ENHANCEMENT 3: Resource Ownership (Who to Page)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS resource_owner (
+    owner_id TEXT PRIMARY KEY,
+    resource_id TEXT NOT NULL,
+    team_name TEXT NOT NULL,
+    oncall_rotation TEXT,
+    slack_channel TEXT,
+    pagerduty_service_id TEXT,
+    email TEXT,
+    escalation_policy TEXT,
+    FOREIGN KEY(resource_id) REFERENCES resource(resource_id)
+);
+
+INSERT INTO resource_owner (owner_id, resource_id, team_name, oncall_rotation, slack_channel, pagerduty_service_id, email, escalation_policy) VALUES
+('own_001', 'res_job_nightly_fact', 'data-engineering', 'weekly', '#data-eng-oncall', 'PDATA001', 'data-eng@company.com', 'escalate_to_vp_after_1hr'),
+('own_002', 'res_job_reg_report', 'compliance-team', 'daily', '#compliance-critical', 'PCOMP002', 'compliance@company.com', 'escalate_to_cfo_immediately'),
+('own_003', 'res_svc_payments', 'backend-team', 'daily', '#backend-oncall', 'PBACK003', 'backend@company.com', 'escalate_to_cto_after_15min'),
+('own_004', 'res_api_backend', 'backend-team', 'daily', '#backend-oncall', 'PBACK003', 'backend@company.com', 'standard'),
+('own_005', 'res_tbl_customers', 'dba-team', 'weekly', '#dba-alerts', 'PDBA005', 'dba@company.com', 'standard'),
+('own_006', 'res_af_vendor_dag', 'data-engineering', 'weekly', '#data-eng-oncall', 'PDATA001', 'data-eng@company.com', 'standard'),
+('own_007', 'res_dbt_kpis', 'analytics-team', 'none', '#analytics-team', NULL, 'analytics@company.com', 'email_only');
+
+-- ============================================================================
+-- ENHANCEMENT 4: Change History (What Changed Recently?)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS resource_change (
+    change_id TEXT PRIMARY KEY,
+    resource_id TEXT NOT NULL,
+    change_type TEXT NOT NULL, -- 'CONFIG_CHANGE', 'DEPLOYMENT', 'SCHEMA_CHANGE', 'SLA_CHANGE'
+    changed_by TEXT,
+    change_summary TEXT,
+    diff_json TEXT,
+    jira_ticket TEXT,
+    changed_at TEXT NOT NULL,
+    FOREIGN KEY(resource_id) REFERENCES resource(resource_id)
+);
+
+INSERT INTO resource_change (change_id, resource_id, change_type, changed_by, change_summary, diff_json, jira_ticket, changed_at) VALUES
+-- THE SMOKING GUN: Cluster downsize 5 days before OOM
+('chg_001', 'res_job_nightly_fact', 'CONFIG_CHANGE', 'platform-eng-bot', 
+ 'Cost optimization: Reduced cluster size from medium to small',
+ json('{"before": {"cluster": "cfg_dbx_medium", "workers": 4, "driver_memory": "16g"}, "after": {"cluster": "cfg_dbx_small", "workers": 2, "driver_memory": "4g"}, "estimated_savings_per_month": 5000}'),
+ 'OPS-1234',
+ datetime('now', '-5 days')),
+
+-- Deployment that caused latency spike
+('chg_002', 'res_api_backend', 'DEPLOYMENT', 'ci-cd-pipeline',
+ 'Deployed v2.40: New Redis caching layer',
+ json('{"version": "v2.40", "commit": "abc123", "replicas": 2, "image": "api:v2.40"}'),
+ 'BE-5678',
+ datetime('now', '-24 hours')),
+
+-- Schema change that broke silver_to_gold job
+('chg_003', 'res_job_silver_gold', 'SCHEMA_CHANGE', 'analytics-team',
+ 'Added user_id column to silver.customers table',
+ json('{"table": "silver.customers", "added_columns": ["user_id"], "downstream_jobs_affected": ["res_job_silver_gold"]}'),
+ 'DATA-9999',
+ datetime('now', '-1 hour')),
+
+-- Accidental table drop
+('chg_004', 'res_tbl_customers', 'SCHEMA_CHANGE', 'john.doe@company.com',
+ 'DROP TABLE customers_master (ACCIDENTAL)',
+ json('{"action": "DROP", "rows_lost": 10500, "recovery_attempted": "UNDROP", "recovery_failed_reason": "retention_period_expired"}'),
+ NULL,
+ datetime('now', '-2 days'));
+
+-- ============================================================================
+-- ENHANCEMENT 5: Run Dependencies (Multi-hop Execution Graph)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS run_dependency (
+    upstream_run_id TEXT NOT NULL,
+    downstream_run_id TEXT NOT NULL,
+    dependency_type TEXT, -- 'TRIGGERS', 'WAITS_FOR', 'READS_OUTPUT_OF'
+    PRIMARY KEY (upstream_run_id, downstream_run_id),
+    FOREIGN KEY(upstream_run_id) REFERENCES run(run_id),
+    FOREIGN KEY(downstream_run_id) REFERENCES run(run_id)
+);
+
+INSERT INTO run_dependency (upstream_run_id, downstream_run_id, dependency_type) VALUES
+-- Airflow triggers dbt
+('run_af_daily_001', 'run_dbt_fail_99', 'TRIGGERS'),
+
+-- dbt failure blocks all downstream regulatory runs
+('run_dbt_fail_99', 'run_reg_15', 'BLOCKS'),
+('run_dbt_fail_99', 'run_reg_16', 'BLOCKS'),
+('run_dbt_fail_99', 'run_reg_17', 'BLOCKS');
+
+-- Update parent_run_id (currently unused in your seed data)
+UPDATE run SET parent_run_id = 'run_af_daily_001' WHERE run_id = 'run_dbt_fail_99';
+UPDATE run SET parent_run_id = 'run_dbt_fail_99' WHERE run_id LIKE 'run_reg_%' AND run_id >= 'run_reg_15';
+
+-- ============================================================================
+-- ENHANCEMENT 6: Enhanced Incident Metadata
+-- ============================================================================
+
+-- Update incidents with richer context
+UPDATE incident SET attributes_json = json_patch(
+    COALESCE(attributes_json, '{}'),
+    json('{"mttr_target_minutes": 30, "estimated_impact_usd": 50000, "affected_customers": "unknown", "root_cause_category": "configuration", "detection_method": "automated_alert", "war_room_slack": "#incident-001"}')
+) WHERE incident_id = 'inc_001';
+
+UPDATE incident SET attributes_json = json_patch(
+    COALESCE(attributes_json, '{}'),
+    json('{"mttr_target_minutes": 15, "estimated_impact_usd": 500000, "affected_customers": 1200, "root_cause_category": "capacity", "detection_method": "customer_reports", "war_room_slack": "#incident-002"}')
+) WHERE incident_id = 'inc_002';
+
+UPDATE incident SET attributes_json = json_patch(
+    COALESCE(attributes_json, '{}'),
+    json('{"mttr_target_minutes": 60, "estimated_impact_usd": 2000000, "affected_customers": "all", "root_cause_category": "human_error", "detection_method": "dq_check", "war_room_slack": "#incident-003-critical", "executive_notification_sent": true}')
+) WHERE incident_id = 'inc_003';
+
+-- Link incidents to multiple resources (cascading impact)
+INSERT INTO incident_resource (incident_id, resource_id, relation) VALUES
+-- OOM Incident
+('inc_001', 'res_tbl_fact_daily', 'BLOCKS'),      -- Direct output blocked
+('inc_001', 'res_job_reg_report', 'BLOCKS'),      -- Downstream blocked
+('inc_001', 'cfg_dbx_small', 'CAUSED_BY'),        -- Root cause
+
+-- Payments Crash
+('inc_002', 'res_api_backend', 'AFFECTS'),        -- Upstream service degraded
+('inc_002', 'res_db_postgres', 'OVERLOADED'),     -- Database under strain
+
+-- Customer Table Drop
+('inc_003', 'res_job_nightly_fact', 'BLOCKS'),    -- Can't run without input
+('inc_003', 'res_dbt_kpis', 'BLOCKS');            -- Analytics broken
+
+-- ============================================================================
+-- ENHANCEMENT 7: Cost Attribution & Baselines
+-- ============================================================================
+
+-- Link costs to runs (currently missing in your data)
+INSERT INTO cost_record (cost_id, run_id, resource_id, platform_id, env_id, compute_type, dbu, cost_usd, currency, time, attributes_json) VALUES
+('cost_run_001', 'run_fact_100', 'res_job_nightly_fact', 'databricks_prod', 'prod', 'job_cluster', 20.0, 40.00, 'USD', datetime('now', '-26 hours'), json('{"cluster_id": "cfg_dbx_small"}')),
+('cost_run_002', 'run_fact_101', 'res_job_nightly_fact', 'databricks_prod', 'prod', 'job_cluster', 22.5, 45.50, 'USD', datetime('now', '-2 hours'), json('{"cluster_id": "cfg_dbx_small", "note": "failed_run_still_billed"}')),
+('cost_run_003', 'run_reg_15', 'res_job_reg_report', 'databricks_prod', 'prod', 'job_cluster', 35.0, 70.00, 'USD', datetime('now', '-12 hours'), json('{"cluster_id": "cfg_dbx_medium", "note": "slow_run"}'));
+
+-- Add cost baselines to resource metadata
+UPDATE resource SET attributes_json = json_patch(
+    COALESCE(attributes_json, '{}'),
+    json('{"avg_cost_per_run_usd": 40.00, "monthly_cost_budget_usd": 3000.00, "cost_baseline_lookback_days": 30}')
+) WHERE resource_id = 'res_job_nightly_fact';
+
+UPDATE resource SET attributes_json = json_patch(
+    COALESCE(attributes_json, '{}'),
+    json('{"avg_cost_per_run_usd": 65.00, "monthly_cost_budget_usd": 2000.00}')
+) WHERE resource_id = 'res_job_reg_report';
+
+-- ============================================================================
+-- ENHANCEMENT 8: Baseline Performance Metrics
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS resource_baseline (
+    baseline_id TEXT PRIMARY KEY,
+    resource_id TEXT NOT NULL,
+    metric_name TEXT NOT NULL,
+    baseline_type TEXT NOT NULL, -- 'p50', 'p95', 'average', 'max', 'min'
+    value_number REAL NOT NULL,
+    unit TEXT,
+    lookback_days INTEGER DEFAULT 30,
+    calculated_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY(resource_id) REFERENCES resource(resource_id)
+);
+
+INSERT INTO resource_baseline (baseline_id, resource_id, metric_name, baseline_type, value_number, unit, lookback_days) VALUES
+-- Job durations
+('base_001', 'res_job_nightly_fact', 'duration_minutes', 'p50', 55, 'minutes', 30),
+('base_002', 'res_job_nightly_fact', 'duration_minutes', 'p95', 65, 'minutes', 30),
+('base_003', 'res_job_reg_report', 'duration_minutes', 'p50', 25, 'minutes', 30),
+('base_004', 'res_job_reg_report', 'duration_minutes', 'p95', 30, 'minutes', 30),
+
+-- Service latency
+('base_005', 'res_api_backend', 'latency_p95_ms', 'average', 45, 'ms', 7),
+('base_006', 'res_svc_payments', 'latency_p95_ms', 'average', 25, 'ms', 7),
+
+-- Data volumes
+('base_007', 'res_tbl_customers', 'row_count', 'average', 10500, 'count', 30),
+('base_008', 'res_tbl_fact_daily', 'row_count', 'average', 250000, 'count', 30);
+
+-- ============================================================================
+-- VERIFICATION QUERIES
+-- ============================================================================
+
+-- Test 1: Can we traverse from job to downstream impact?
+-- Expected: Should return res_tbl_fact_daily, res_dbt_kpis, res_job_reg_report
+SELECT 'Downstream Impact Test' AS test, dst_resource_id 
+FROM lineage_edge 
+WHERE src_resource_id = 'res_job_nightly_fact'
+UNION
+SELECT 'Downstream Impact Test', dst_resource_id 
+FROM lineage_edge 
+WHERE src_resource_id IN (
+    SELECT dst_resource_id FROM lineage_edge WHERE src_resource_id = 'res_job_nightly_fact'
+);
+
+-- Test 2: Do all critical resources have SLAs?
+-- Expected: Should return 6 rows
+SELECT 'SLA Coverage Test' AS test, r.name, s.sla_id
+FROM resource r
+LEFT JOIN sla_policy s ON r.resource_id = s.resource_id
+WHERE r.resource_type IN ('job', 'service', 'table')
+AND r.attributes_json LIKE '%critical%' OR r.attributes_json LIKE '%p0%';
+
+-- Test 3: Do all resources have owners?
+-- Expected: Should return 7 rows
+SELECT 'Owner Coverage Test' AS test, r.name, o.team_name, o.slack_channel
+FROM resource r
+LEFT JOIN resource_owner o ON r.resource_id = o.resource_id
+WHERE r.resource_type IN ('job', 'service', 'table');
+
+-- Test 4: Can we find recent changes for OOM job?
+-- Expected: Should return the cfg_dbx_small downsize change
+SELECT 'Change History Test' AS test, rc.change_summary, rc.changed_at
+FROM resource_change rc
+WHERE rc.resource_id = 'res_job_nightly_fact'
+AND rc.changed_at > datetime('now', '-7 days')
+ORDER BY rc.changed_at DESC;
