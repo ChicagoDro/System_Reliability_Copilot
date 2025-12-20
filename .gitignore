@@ -11,3 +11,6 @@ wheels/
 
 # Private environment variables
 .env
+
+data/
+indexes/
