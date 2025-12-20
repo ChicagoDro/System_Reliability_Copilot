@@ -1,11 +1,8 @@
-# src/reliability_copilot/graph_retriever.py
+# src/graph_retriever.py
 """
 Graph retriever for the Reliability Copilot (Phase 1 Compatible).
-
 Updates:
-- Fixed legacy shims to work without raw 'self.edges' list.
-- Added missing imports for Document/json.
-- robust handling of Graph type definitions.
+- Serializes JSON attributes into LLM-readable text.
 """
 
 from __future__ import annotations
@@ -20,7 +17,6 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 try:
     from .graph_model import Graph, NodeId, build_graph
 except ImportError:
-    # Fallback types if graph_model is simplified
     NodeId = str
     Graph = Dict[NodeId, Dict[str, Any]]
     from .graph_model import build_graph
@@ -38,12 +34,10 @@ class GraphHit:
     snippet: str
     attrs: Dict[str, Any]
 
-
 @dataclass
 class Subgraph:
     nodes: Dict[NodeId, Dict[str, Any]]
     edges: List[Tuple[NodeId, NodeId, str]]
-
 
 # ----------------------------
 # Retriever
@@ -63,7 +57,6 @@ class GraphRAGRetriever:
         if graph is None:
             if not db_path:
                 raise ValueError("Provide either graph=... or db_path=...")
-            # Phase 1: build_graph returns a Dictionary (Adjacency List)
             graph = build_graph(
                 db_path,
                 mode=mode,
@@ -78,10 +71,14 @@ class GraphRAGRetriever:
         for nid, n in self.graph.items():
             title = (n.get("title") or "").lower()
             text = (n.get("text") or "").lower()
-            blob = f"{title}\n{text}"
+            
+            # Index attributes too so we can search by "critical" or "p0"
+            attrs = n.get("attrs") or {}
+            attr_text = " ".join([f"{k} {v}" for k, v in attrs.items()]).lower()
+            
+            blob = f"{title}\n{text}\n{attr_text}"
             self._search_rows.append((nid, blob))
 
-        # Lazy cache for back-compat
         self._adj = None
 
     @classmethod
@@ -91,14 +88,8 @@ class GraphRAGRetriever:
         mode: str = "demo",
         days_back: Optional[int] = None
     ) -> "GraphRAGRetriever":
-        """
-        Factory to load from the standard SQLite path.
-        Handles relative path resolution if running from src/.
-        """
-        # Simple path check to be helpful
         if not os.path.exists(db_path) and os.path.exists(f"../{db_path}"):
             db_path = f"../{db_path}"
-
         return cls(db_path=db_path, mode=mode, days_back=days_back)
     
     # ----------------------------
@@ -167,7 +158,6 @@ class GraphRAGRetriever:
         depth: int = 2,
         max_nodes: int = 80,
         allowed_relation_types: Optional[Set[str]] = None,
-        allowed_node_types: Optional[Set[str]] = None,
     ) -> Subgraph:
         seeds = [nid for nid in seed_node_ids if nid in self.graph]
         if not seeds:
@@ -198,8 +188,6 @@ class GraphRAGRetriever:
                     frontier.append((other, d + 1))
 
         nodes_out = {nid: self.graph[nid] for nid in visited if nid in self.graph}
-        
-        # De-dup edges
         unique_edges = list(set((a, b, c) for a, b, c in edges_out))
 
         return Subgraph(nodes=nodes_out, edges=unique_edges)
@@ -219,13 +207,12 @@ class GraphRAGRetriever:
 
 
 # ---------------------------------------------------------------------------
-# Backwards-compat helpers (FIXED for Phase 1)
+# Backwards-compat helpers
 # ---------------------------------------------------------------------------
 
 try:
     from langchain.schema import Document
 except ImportError:
-    # Dummy Document class if langchain is missing
     @dataclass
     class Document:
         page_content: str
@@ -246,23 +233,19 @@ def _build_compat_adj(graph: Graph) -> _CompatAdj:
     neighbors: Dict[str, Set[str]] = {}
 
     for nid, n in graph.items():
-        # Node
         ntype = str(n.get("type") or "unknown")
         props = dict(n.get("attrs") or {})
         if "title" not in props:
             props["title"] = n.get("title")
         nodes[nid] = _CompatNode(type=ntype, properties=props)
 
-        # Edges (Derived from neighbors list)
         if nid not in neighbors:
             neighbors[nid] = set()
         
-        # Phase 1 graph stores neighbors in the dict
         nb_list = n.get("neighbors", [])
         for nb in nb_list:
             other_id = nb["id"]
             neighbors[nid].add(other_id)
-            # Ensure bidirectionality in adj view
             if other_id not in neighbors:
                 neighbors[other_id] = set()
             neighbors[other_id].add(nid)
@@ -275,6 +258,13 @@ def _graph_node_to_doc(nid: str, n: Dict[str, Any]) -> Document:
     attrs = n.get("attrs") or {}
     text = n.get("text") or ""
 
+    # === CRITICAL FIX: Serialize Attributes into Text ===
+    # This ensures the LLM sees the JSON config (e.g. "retention_days: 1")
+    if attrs:
+        attr_lines = [f"  - {k}: {v}" for k, v in attrs.items()]
+        text += "\n[Attributes]:\n" + "\n".join(attr_lines)
+    # ====================================================
+
     header = f"[{ntype}] {title} (node_id={nid})"
     return Document(
         page_content=header + "\n" + text,
@@ -283,7 +273,6 @@ def _graph_node_to_doc(nid: str, n: Dict[str, Any]) -> Document:
 
 def _adj_property(self) -> _CompatAdj:
     if getattr(self, "_adj", None) is None:
-        # FIX: We now build adj strictly from self.graph, ignoring missing self.edges
         self._adj = _build_compat_adj(self.graph)
     return self._adj
 
@@ -292,6 +281,5 @@ def _get_subgraph_for_query(self, query: str, **kwargs):
     docs = [_graph_node_to_doc(nid, n) for nid, n in sg.nodes.items()]
     return docs, list(sg.nodes.keys())
 
-# Inject shims
 GraphRAGRetriever.adj = property(_adj_property) # type: ignore
 GraphRAGRetriever.get_subgraph_for_query = _get_subgraph_for_query # type: ignore

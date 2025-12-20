@@ -34,20 +34,29 @@ _DOCS_INTENT_PATTERNS = [
 ]
 
 _DOCS_TOPIC_KEYWORDS = [
+    # Databricks
     "compute", "cluster", "autoscaling", "spot", "on-demand", "photon",
     "warehouse", "serverless", "dbu", "pools", "policies", "job cluster",
-    # NEW INFRA TERMS
+    "schema evolution", "auto loader", "delta live tables",
+    # Snowflake
+    "snowpipe", "time travel", "undrop", "clustering keys", "micro-partition",
+    "credit usage", "cloud services",
+    # Kubernetes / Infra
     "pod", "container", "ingress", "latency", "throughput", "iops", 
-    "load balancer", "vpc", "subnet", "firewall"
+    "load balancer", "vpc", "subnet", "firewall", "pvc", "eviction",
+    "liveness", "readiness", "oomkilled", "crashloop",
+    # Airflow / dbt
+    "sensor", "backfill", "xcom", "task instance", "incremental", "snapshot"
 ]
 
 _OPS_INTENT_PATTERNS = [
     r"\bfix\b", r"\bmitigat", r"\bresolve\b", r"\bpage\b", r"\bcontact\b",
     r"\bowner\b", r"\bsla\b", r"\bseverity\b", r"\bprocedure\b",
     r"\brunbook\b", r"\balert\b", r"\bescalat\b", r"\bdeadlock\b",
-    r"\btimeout\b", r"\bfailure\b",r"\bfix\b",
-    # NEW INFRA ACTIONS
-    r"\bscale\b", r"\brollback\b", r"\brestart\b", r"\bdrain\b", r"\bdeploy\b"
+    r"\btimeout\b", r"\bfailure\b", r"\bfix\b",
+    # New Infra Actions
+    r"\bscale\b", r"\brollback\b", r"\brestart\b", r"\bdrain\b", r"\bdeploy\b",
+    r"\blog(s)?\b", r"\btrace(s)?\b", r"\bmetric(s)?\b"
 ]
 
 def _looks_like_docs_question(q: str) -> bool:
@@ -66,9 +75,20 @@ def _has_entity_anchor(q: str) -> bool:
         token in ql
         for token in [
             "job_id=", "run_id=", "query_id=", "warehouse_id=",
-            "cluster_id=", "user_id=", "compute_type=", "incident_id="
+            "cluster_id=", "user_id=", "compute_type=", "incident_id=",
+            # Expanded Anchors
+            "resource_id=", "dataset_id=", "rule_id=", "platform_id="
         ]
     )
+
+def _looks_like_usage_overview_question(q: str) -> bool:
+    ql = q.lower()
+    keywords = [
+        "system status", "system health", "platform overview", 
+        "cost overview", "summarize usage", "platform health",
+        "summarize my databricks usage"
+    ]
+    return any(k in ql for k in keywords)
 
 # ---------------------------------------------------------------------------
 # Embedding Factory
@@ -216,11 +236,23 @@ ASSISTANT_PROMPT_TEMPLATE = ChatPromptTemplate.from_messages(
     ]
 )
 
+# Expanded Classifier Prompt to handle new entity types
 QUESTION_CLASSIFIER_PROMPT = PromptTemplate.from_template(
-    """You are a classifier. Return JSON only.
+    """You are a classifier for a Reliability Copilot. Return JSON only.
+
 Classify the user's question into:
 - intent: one of ["global_aggregate", "global_topn", "other"]
-- entity_type: one of ["job", "warehouse", "user", "query", "run", null]
+- entity_type: one of [
+    "job", "run", "incident", "service", "pod", 
+    "table", "database", "dag", "resource", "warehouse", "compute"
+]
+
+Examples:
+- "How many jobs failed?" -> {{"intent": "global_aggregate", "entity_type": "job"}}
+- "Show me the top 5 failing services" -> {{"intent": "global_topn", "entity_type": "service"}}
+- "What is the status of inc_003?" -> {{"intent": "other", "entity_type": "incident"}}
+- "Are there any active incidents?" -> {{"intent": "global_aggregate", "entity_type": "incident"}}
+
 Question: {question}
 Return JSON with keys intent and entity_type.
 """
@@ -229,21 +261,6 @@ Return JSON with keys intent and entity_type.
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _looks_like_job_count_question(q: str) -> bool:
-    return ("how many jobs" in q.lower()) or ("number of jobs" in q.lower())
-
-def _looks_like_usage_overview_question(q: str) -> bool:
-    return ("summarize my databricks usage" in q.lower())
-
-def _looks_like_jobs_optimization_question(q: str) -> bool:
-    return ("jobs need optimizing" in q.lower())
-
-def _extract_top_n(q: str, default: int = 3) -> int:
-    m = re.search(r"\btop\s+(\d+)\b", q.lower())
-    if m:
-        return int(m.group(1))
-    return default
 
 def build_graph_explanation(node_ids: List[str], retriever: GraphRAGRetriever) -> str:
     if not node_ids:
@@ -315,16 +332,22 @@ class ReliabilityAssistant:
         return cls(graph_retriever=graph, docs_retriever=docs_r, runbooks_retriever=rbooks_r)
     
     def _classify_question(self, question: str) -> dict:
-        raw = self.classifier_chain.invoke({"question": question})
         try:
+            raw = self.classifier_chain.invoke({"question": question})
             return json.loads(raw)
         except Exception:
             return {"intent": "other", "entity_type": None}
 
     def _answer_global_aggregate(self, entity_type: str) -> ChatResult:
         entity_type = entity_type.lower()
+        # Count nodes in the graph that match the requested entity type
+        # Note: 'job', 'service', etc. are typically mapped to 'resource' nodes with a 'type' attribute
+        # or separate node types depending on your graph builder.
+        # This naive counter works if your graph nodes use specific types (e.g. 'incident').
         count = sum(1 for n in self.graph_retriever.adj.nodes.values() 
-                    if getattr(n, "type", None) == entity_type)
+                    if getattr(n, "type", "").lower() == entity_type 
+                    or (getattr(n, "type", "") == "resource" and entity_type in getattr(n, "properties", {}).get("name", "").lower()))
+        
         return ChatResult(
             answer=f"There are {count} {entity_type}(s) in the dataset.",
             graph_explanation=f"[deterministic] Counted nodes of type '{entity_type}'.",
@@ -332,9 +355,6 @@ class ReliabilityAssistant:
 
     def _answer_global_usage_overview(self) -> ChatResult:
         return ChatResult(answer="System overview not implemented in lite mode.", graph_explanation="N/A")
-
-    def _answer_jobs_needing_optimization(self) -> ChatResult:
-        return ChatResult(answer="Optimization Check not implemented in lite mode.", graph_explanation="N/A")
 
     def _render_docs(self, docs: List[Document], section_title: str) -> str:
         if not docs: return ""
@@ -355,9 +375,13 @@ class ReliabilityAssistant:
         return out
 
     def answer(self, question: str, focus: Optional[dict] = None) -> ChatResult:
-        # 1. Deterministic Shortcuts
-        if _looks_like_job_count_question(question):
-             return self._answer_global_aggregate("job")
+        # 1. Deterministic Shortcuts (New Classification Logic)
+        if _looks_like_usage_overview_question(question):
+             return self._answer_global_usage_overview()
+
+        classification = self._classify_question(question)
+        if classification.get("intent") == "global_aggregate" and classification.get("entity_type"):
+            return self._answer_global_aggregate(classification["entity_type"])
 
         # 2. Retrieve Contexts
         
@@ -365,13 +389,14 @@ class ReliabilityAssistant:
         # Force the focus entity into the search context
         forced_seeds = []
         if focus and focus.get("entity_id") and focus.get("entity_type"):
-            forced_id = f"{focus['entity_type']}:{focus['entity_id']}"
+            # FIX: Use Double Colon separator for Graph Lookups
+            forced_id = f"{focus['entity_type']}::{focus['entity_id']}"
             forced_seeds.append(forced_id)
 
         telemetry_docs, node_ids = self.graph_retriever.get_subgraph_for_query(
             query=question, 
             seed_limit=4, 
-            depth=2, 
+            depth=3, # UPDATED: Increased Depth to find Configs (Incident->Resource->Run->Config)
             max_nodes=40
         )
 

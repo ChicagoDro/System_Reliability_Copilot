@@ -20,7 +20,7 @@ INDEX_DIR = Path(os.getenv("INDEX_DIR", str(PROJECT_ROOT / "indexes")))
 # Unified Index Paths
 RELIABILITY_EVIDENCE_INDEX_PATH = INDEX_DIR / "reliability_evidence"
 RELIABILITY_RUNBOOKS_INDEX_PATH = INDEX_DIR / "reliability_runbooks"
-VENDOR_DOCS_INDEX_PATH = INDEX_DIR / "databricks_docs"
+VENDOR_DOCS_INDEX_PATH = INDEX_DIR / "vendor_docs"
 
 # --------------------------------------------------------------------------------------
 # Databricks documentation corpus
@@ -34,32 +34,57 @@ DOCS_URL_PREFIX = os.getenv("DOCS_URL_PREFIX", "https://docs.databricks.com/aws/
 VENDOR_DOCS_URLS = {
     "databricks": [
         "https://docs.databricks.com/en/compute/pool-best-practices.html",
-        "https://docs.databricks.com/en/jobs/settings.html",  # Retries/Timeouts
-        "https://docs.databricks.com/en/delta/history.html",  # Delta History
+        "https://docs.databricks.com/en/jobs/settings.html",
+        "https://docs.databricks.com/aws/en/compute/configure",
+        "https://docs.databricks.com/en/delta/history.html",
+        # NEW: The "Answer Key" for your Schema Drift Scenario
+        "https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/schema", 
+        "https://docs.databricks.com/aws/en/data-engineering/schema-evolution",
     ],
     "snowflake": [
-        "https://docs.snowflake.com/en/user-guide/data-time-travel", # For "Undrop" scenario
+        "https://docs.snowflake.com/en/user-guide/tables-iceberg-best-practices",
+        "https://docs.snowflake.com/en/user-guide/data-time-travel",
         "https://docs.snowflake.com/en/user-guide/data-time-travel-undrop",
+        # NEW: Critical for understanding Cost/Credit Limits
+        "https://docs.snowflake.com/en/user-guide/resource-monitors.html",
+        "https://docs.snowflake.com/en/sql-reference/sql/undrop-table.html",
     ],
     "k8s": [
-        "https://kubernetes.io/docs/concepts/services-networking/service/", # For Service/Connection failures
-        "https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/",
         "https://kubernetes.io/docs/concepts/services-networking/service/",
+        "https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/",
         "https://kubernetes.io/docs/concepts/workloads/controllers/deployment/",
         "https://kubernetes.io/docs/tasks/debug/debug-application/debug-pods/",
+        # NEW: The "Physics" of your OOM and Traffic Spike scenarios
+        "https://kubernetes.io/docs/concepts/policy/resource-quotas/", 
+        "https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/",
     ],
     "sre_principles": [
         "https://sre.google/sre-book/service-level-objectives/",
         "https://sre.google/sre-book/monitoring-distributed-systems/",
-        "https://sre.google/sre-book/golden-signals/" # The "Bible" for Infra SREs
+        "https://sre.google/sre-book/golden-signals/"
     ],
     "airflow": [
-        "https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/sensors.html", # For Empty File Sensor
+        "https://airflow.apache.org/docs/apache-airflow/stable/best-practices.html",
+        "https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/sensors.html",
         "https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/dags.html",
+        # NEW: Explains the difference between SLA (Notification) and Timeout (Failure)
+        "https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/tasks.html",
+    ],
+    "ec2": [
+        "https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-best-practices.html",
+        "https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instance-types.html",
+        "https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/monitoring_ec2.html",
+        # NEW: Critical for Cost Optimization scenarios
+        "https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-best-practices.html",
     ],
     "dbt": [
-        "https://docs.getdbt.com/docs/build/tests", # For Unique/Not Null tests
-        "https://docs.getdbt.com/docs/build/materializations",
+        "https://docs.getdbt.com/best-practices",
+        "https://docs.getdbt.com/docs/build/data-tests",
+        "https://docs.getdbt.com/docs/build/incremental-models",
+        "https://docs.getdbt.com/guides/debug-errors",
+        # NEW: The direct fix for your "KPI Duplicates" scenario
+        "https://docs.getdbt.com/reference/resource-configs/unique_key",
+        "https://docs.getdbt.com/docs/build/incremental-strategy",
     ]
 }
 

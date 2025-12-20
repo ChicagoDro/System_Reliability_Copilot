@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -11,6 +12,7 @@ import streamlit as st
 from src.chat_orchestrator import ReliabilityAssistant
 from src.reports.base import SelectionLike
 from src.reports.registry import get_reports, get_report_map, get_default_report_key
+from src.prompts_deterministic import PROMPT_PACKS
 
 
 # ============================
@@ -21,12 +23,6 @@ from src.reports.registry import get_reports, get_report_map, get_default_report
 class Chip:
     """
     A deterministic, UI-stable action chip.
-
-    id: stable identifier used for Streamlit keying (prevents index-shift weirdness)
-    label: button label
-    prompt: prompt to run when clicked
-    focus: whether the chip is selection-focused (parity with existing chip models)
-    group: taxonomy lane (Understand / Diagnose / Optimize / Monitor)
     """
     id: str
     label: str
@@ -51,19 +47,21 @@ def _safe_slug(x: str) -> str:
 
 def _default_chips_for_selection(report_name: str, sel: SelectionLike) -> List[Chip]:
     """
-    Deterministic baseline chips that ALWAYS appear for a selection,
-    even if the report didn't define any action chips.
+    Deterministic baseline chips that ALWAYS appear for a selection.
+    Now includes 'Deep Dive' packs if available.
     """
     et = str(sel.entity_type)
     eid = str(sel.entity_id)
+    report_slug = report_name.lower()
 
+    # FIX: Made the prompt platform-agnostic (removed "Databricks usage telemetry")
     base: List[Chip] = [
         Chip(
             id=f"core:about:{_safe_slug(et)}:{_safe_slug(eid)}",
             label="📌 Explain this",
             group="Understand",
             prompt=(
-                f"Explain what this {et} ({eid}) represents in Databricks usage telemetry, "
+                f"Explain what this {et} ({eid}) represents in the system's telemetry, "
                 f"and summarize what matters most in the context of the '{report_name}' report."
             ),
         ),
@@ -76,68 +74,65 @@ def _default_chips_for_selection(report_name: str, sel: SelectionLike) -> List[C
                 "Be specific, and reference the underlying telemetry patterns (runs, compute usage, events) where applicable."
             ),
         ),
-        Chip(
-            id=f"core:next:{_safe_slug(et)}:{_safe_slug(eid)}",
-            label="✅ Next steps",
-            group="Monitor",
-            prompt=(
-                f"Give me a short action plan for {et} ({eid}) based on the '{report_name}' report: "
-                "quick wins, deeper investigation steps, and what to monitor going forward."
-            ),
-        ),
     ]
 
-    et_norm = et.lower()
+    # --- Inject Deep Dive Packs based on Report Context ---
+    
+    # 1. SLA / Duration Reports
+    if "sla" in report_slug or "breach" in sel.label.lower():
+        if "triage_sla_miss" in PROMPT_PACKS:
+            base.append(Chip(
+                id=f"pack:sla:{_safe_slug(eid)}",
+                label="🕵️ SLA Triage (Deep Dive)",
+                group="Diagnose",
+                prompt="PACK:triage_sla_miss",
+                focus=True
+            ))
 
-    # Job-ish entity types
-    if "job" in et_norm:
-        base.extend(
-            [
-                Chip(
-                    id=f"job:cost:{_safe_slug(eid)}",
-                    label="💸 Optimize cost",
-                    group="Optimize",
-                    prompt=(
-                        f"For job ({eid}), what are the top cost drivers and the highest-confidence way to reduce cost "
-                        "without harming SLA? Include tradeoffs and verification steps."
-                    ),
-                ),
-                Chip(
-                    id=f"job:reliability:{_safe_slug(eid)}",
-                    label="🛡️ Reliability check",
-                    group="Optimize",
-                    prompt=(
-                        f"For job ({eid}), assess reliability risks (failures, retries, long tail runtimes, evictions). "
-                        "Recommend fixes and how to validate improvement."
-                    ),
-                ),
-            ]
-        )
+    # 2. Cost Reports
+    if "cost" in report_slug or "spend" in report_slug:
+        if "cost_anomaly_review" in PROMPT_PACKS:
+            base.append(Chip(
+                id=f"pack:cost:{_safe_slug(eid)}",
+                label="📉 Cost Analysis (Deep Dive)",
+                group="Diagnose",
+                prompt="PACK:cost_anomaly_review",
+                focus=True
+            ))
 
-    # Compute-ish entity types
-    if any(x in et_norm for x in ["cluster", "compute", "warehouse"]):
-        base.extend(
-            [
-                Chip(
-                    id=f"compute:util:{_safe_slug(et)}:{_safe_slug(eid)}",
-                    label="🧠 Utilization",
-                    group="Optimize",
-                    prompt=(
-                        f"For {et} ({eid}), assess utilization efficiency (CPU/memory patterns, over/under-provisioning). "
-                        "Recommend sizing/autoscaling changes and how to validate improvements."
-                    ),
-                ),
-                Chip(
-                    id=f"compute:stability:{_safe_slug(et)}:{_safe_slug(eid)}",
-                    label="⚠️ Stability",
-                    group="Diagnose",
-                    prompt=(
-                        f"For {et} ({eid}), identify stability risks (spot/eviction behavior, node churn, driver OOM, GC pressure). "
-                        "Give mitigation steps and what telemetry would confirm the root cause."
-                    ),
-                ),
-            ]
-        )
+    # 3. Incident Reports
+    if "incident" in report_slug or et == "incident":
+        if "incident_postmortem" in PROMPT_PACKS:
+            base.append(Chip(
+                id=f"pack:inc:{_safe_slug(eid)}",
+                label="📝 Draft Post-Mortem",
+                group="Fix",
+                prompt="PACK:incident_postmortem",
+                focus=True
+            ))
+
+    # 4. Log / Error Reports
+    if "log" in report_slug or "error" in report_slug:
+        if "log_root_cause_analysis" in PROMPT_PACKS:
+            base.append(Chip(
+                id=f"pack:log:{_safe_slug(eid)}",
+                label="🔍 Root Cause Analysis",
+                group="Diagnose",
+                prompt="PACK:log_root_cause_analysis",
+                focus=True
+            ))
+
+    # 5. Resource Failure Reports
+    if "failing" in report_slug or "fail" in report_slug:
+        if "resource_health_check" in PROMPT_PACKS:
+            base.append(Chip(
+                id=f"pack:res:{_safe_slug(eid)}",
+                label="🩺 Health Check (Deep Dive)",
+                group="Diagnose",
+                prompt="PACK:resource_health_check",
+                focus=True
+            ))
+    # ---------------------------------------------------------
 
     return base
 
@@ -155,10 +150,6 @@ def _render_chip_row(chips: List[Chip], key_prefix: str, columns: int = 3) -> No
 
 
 def _render_chip_groups(chips: List[Chip], key_prefix: str) -> None:
-    """
-    Render chips grouped by taxonomy lane in a deterministic order.
-    Unknown groups fall into Diagnose.
-    """
     if not chips:
         return
 
@@ -175,77 +166,44 @@ def _render_chip_groups(chips: List[Chip], key_prefix: str) -> None:
 
 
 # ============================
-# Report Catalog (Pillars + TODO)
+# Report Catalog
 # ============================
 
-# Active reports are listed by NAME.
-# These must match the 'name' attribute of reports defined in src/reports/registry.py
 PILLAR_CATALOG: List[Tuple[str, str, List[str], List[Tuple[str, str]]]] = [
     (
         "Incident Response",
         "Active incidents, severity breakdown, and MTTR.",
-        [
-            "Recent Incidents",
-            "Incident Severity Breakdown",
-        ],
-        [
-            ("MTTR Analysis", "Mean Time To Recovery trends."),
-            ("Post-Mortem Generator", "Draft summaries for closed incidents."),
-        ],
+        ["Recent Incidents", "Incident Severity Breakdown"],
+        [("MTTR Analysis", "Mean Time To Recovery trends."), ("Post-Mortem Generator", "Draft summaries for closed incidents.")],
     ),
     (
         "Platform Health",
         "Resource status, run failures, and pipeline reliability.",
-        [
-            "Failing Resources",
-            "Run History",
-            "Platform Availability",
-            "SLA Breaches"
-        ],
-        [
-            ("Zombie Resources", "Active resources with no recent runs."),
-        ],
+        ["Failing Resources", "Run History", "Platform Availability", "SLA Breaches"],
+        [("Zombie Resources", "Active resources with no recent runs.")],
     ),
     (
         "Observability",
         "Logs, metrics, and anomaly detection.",
-        [
-            "Service Health (Golden Signals)",
-            "Error Log Volume",
-            "Metric Anomalies",
-        ],
-        [
-            ("Log Noise Reduction", "Identify spammy recurring logs."),
-            ("Trace Latency", "P95 latency across distributed traces."),
-        ],
+        ["Service Health (Golden Signals)", "Error Log Volume", "Metric Anomalies"],
+        [("Log Noise Reduction", "Identify spammy recurring logs."), ("Trace Latency", "P95 latency across distributed traces.")],
     ),
     (
-            "Cost & Efficiency",
-            "Spend vs Reliability tradeoffs.",
-            [
-                "Cloud Cost Overview", # <--- Moved from TODO to Active
-            ],
-            [
-                ("Cost of Downtime", "Estimated financial impact of recent outages."),
-                ("Idle Resources", "Platforms provisioned but unused."),
-            ],
+        "Cost & Efficiency",
+        "Spend vs Reliability tradeoffs.",
+        ["Cloud Cost Overview"],
+        [("Cost of Downtime", "Estimated financial impact of recent outages."), ("Idle Resources", "Platforms provisioned but unused.")],
     ),
 ]
 
-# Sidebar-only renames (do NOT change report implementation)
 REPORT_NAME_ALIASES = {
     "Recent Incidents": "🚨 Recent Incidents",
     "Failing Resources": "🔥 Failing Resources",
     "Recent Run History": "🏃 Run History",
 }
 
+
 def _resolve_report_key(identifier: str, report_map: Dict[str, object]) -> Optional[str]:
-    """
-    Identifier can be either:
-      - an actual report key, OR
-      - a report.name
-    Returns the report key if found.
-    """
     if identifier in report_map:
         return identifier
     for k, r in report_map.items():
@@ -273,60 +231,24 @@ def _select_report(key: str) -> None:
     st.session_state.selected_report_key = key
     st.session_state.pending_prompt = None
     st.session_state.selection = None
-    
-    # NEW: Clear the commentary history so the chat pane resets
+    # CLEAR COMMENTARY ON REPORT CHANGE
     st.session_state.commentary = []
-    
     st.rerun()
 
 
 def _render_sidebar_report_nav(report_map: Dict[str, object]) -> None:
-    """
-    Pillar-based navigation:
-    - Active reports are clickable
-    - TODO reports are disabled + greyed out
-    - Unmapped reports show up under "Uncategorized"
-    """
     st.markdown(
         """
         <style>
-        section[data-testid="stSidebar"] .block-container {
-            padding-top: 0.75rem;
-            padding-bottom: 0.75rem;
-        }
-
-        .pillar-title {
-            font-size: 0.95rem;
-            font-weight: 700;
-            margin: 0.25rem 0 0.10rem 0;
-        }
-        .pillar-sub {
-            font-size: 0.75rem;
-            opacity: 0.70;
-            margin: 0 0 0.35rem 0;
-        }
-
+        section[data-testid="stSidebar"] .block-container { padding-top: 0.75rem; padding-bottom: 0.75rem; }
+        .pillar-title { font-size: 0.95rem; font-weight: 700; margin: 0.25rem 0 0.10rem 0; }
+        .pillar-sub { font-size: 0.75rem; opacity: 0.70; margin: 0 0 0.35rem 0; }
         section[data-testid="stSidebar"] div[data-testid="stButton"] > button {
-            width: 100%;
-            border-radius: 10px;
-            padding: 0.35rem 0.55rem;
-            margin: 0.12rem 0;
-            font-size: 0.80rem;
-            text-align: left;
-            white-space: normal !important;
-            height: auto !important;
+            width: 100%; border-radius: 10px; padding: 0.35rem 0.55rem; margin: 0.12rem 0;
+            font-size: 0.80rem; text-align: left; white-space: normal !important; height: auto !important;
         }
-
-        section[data-testid="stSidebar"] div[data-testid="stButton"] > button:disabled {
-            opacity: 0.45;
-            cursor: not-allowed;
-        }
-
-        .selected-report {
-            font-size: 0.75rem;
-            opacity: 0.75;
-            margin-top: 0.25rem;
-        }
+        section[data-testid="stSidebar"] div[data-testid="stButton"] > button:disabled { opacity: 0.45; cursor: not-allowed; }
+        .selected-report { font-size: 0.75rem; opacity: 0.75; margin-top: 0.25rem; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -336,79 +258,52 @@ def _render_sidebar_report_nav(report_map: Dict[str, object]) -> None:
     q = st.text_input("Search reports", key="report_search", placeholder="e.g. cost, reliability…")
 
     def matches(text: str) -> bool:
-        if not q:
-            return True
-        return q.lower() in text.lower()
+        return (not q) or (q.lower() in text.lower())
 
     for pillar, desc, active_idents, todo_items in PILLAR_CATALOG:
-        # Filter pillars based on search
         if q and not matches(pillar) and not matches(desc):
-            any_hit = False
+            # Shallow check for children matches
+            has_match = False
             for ident in active_idents:
                 k = _resolve_report_key(ident, report_map)
-                if k:
-                    shown = _display_report_name(report_map[k])
-                    if matches(shown):
-                        any_hit = True
-                        break
-            if not any_hit:
+                if k and matches(_display_report_name(report_map[k])): has_match = True
+            if not has_match:
                 for name, d in todo_items:
-                    if matches(name) or matches(d):
-                        any_hit = True
-                        break
-            if not any_hit:
+                    if matches(name) or matches(d): has_match = True
+            if not has_match:
                 continue
 
         st.markdown(f"<div class='pillar-title'>{pillar}</div>", unsafe_allow_html=True)
         st.markdown(f"<div class='pillar-sub'>{desc}</div>", unsafe_allow_html=True)
 
-        # Active reports (clickable)
         for ident in active_idents:
             k = _resolve_report_key(ident, report_map)
-            if not k:
-                continue
+            if not k: continue
             r = report_map[k]
             shown_name = _display_report_name(r)
-
-            if q and not matches(shown_name):
-                continue
+            if q and not matches(shown_name): continue
 
             is_selected = (k == st.session_state.selected_report_key)
             label = f"✅ {shown_name}" if is_selected else shown_name
+            if st.button(label, key=f"nav:{pillar}:{k}"): _select_report(k)
 
-            if st.button(label, key=f"nav:{pillar}:{k}"):
-                _select_report(k)
-
-        # TODO reports (disabled)
         for name, short_desc in todo_items:
-            if q and not matches(name) and not matches(short_desc):
-                continue
+            if q and not matches(name) and not matches(short_desc): continue
             st.button(f"🕒 {name} (TODO)", key=f"nav:{pillar}:todo:{_safe_slug(name)}", disabled=True)
-
         st.divider()
 
-    # Uncategorized (auto)
     uncat = _build_uncategorized_report_names(report_map)
     if uncat:
         st.markdown("<div class='pillar-title'>Uncategorized</div>", unsafe_allow_html=True)
-        st.markdown("<div class='pillar-sub'>Reports not yet mapped to a pillar.</div>", unsafe_allow_html=True)
-
         for name in uncat:
             k = _resolve_report_key(name, report_map)
-            if not k:
-                continue
+            if not k: continue
             r = report_map[k]
             shown_name = _display_report_name(r)
-
-            if q and not matches(shown_name):
-                continue
-
+            if q and not matches(shown_name): continue
             is_selected = (k == st.session_state.selected_report_key)
             label = f"✅ {shown_name}" if is_selected else shown_name
-
-            if st.button(label, key=f"nav:uncat:{k}"):
-                _select_report(k)
-
+            if st.button(label, key=f"nav:uncat:{k}"): _select_report(k)
         st.divider()
 
     cur_key = st.session_state.selected_report_key
@@ -423,37 +318,25 @@ def _render_sidebar_report_nav(report_map: Dict[str, object]) -> None:
 def init_state() -> None:
     if "assistant" not in st.session_state:
         st.session_state.assistant = ReliabilityAssistant.from_local()
-
     if "selected_report_key" not in st.session_state:
         st.session_state.selected_report_key = get_default_report_key()
-
     if "filters" not in st.session_state:
         st.session_state.filters = {}
-
     if "selection" not in st.session_state:
-        st.session_state.selection = None  # type: Optional[SelectionLike]
-
+        st.session_state.selection = None
     if "commentary" not in st.session_state:
-        st.session_state.commentary = []  # list of {"prompt": str, "response": str}
-
+        st.session_state.commentary = []
     if "pending_prompt" not in st.session_state:
         st.session_state.pending_prompt = None
-
     if "debug_mode" not in st.session_state:
         st.session_state.debug_mode = False
-
     if "db_path" not in st.session_state:
         repo_root = Path(__file__).resolve().parents[1]
         default_db = repo_root / "data" / "reliability.db"
         st.session_state.db_path = os.getenv("DB_PATH", str(default_db))
-
-    # Debug buffers used later
-    if "_debug_graph" not in st.session_state:
-        st.session_state._debug_graph = None
-    if "_debug_prompt" not in st.session_state:
-        st.session_state._debug_prompt = None
-    if "_debug_context" not in st.session_state:
-        st.session_state._debug_context = None
+    if "_debug_graph" not in st.session_state: st.session_state._debug_graph = None
+    if "_debug_prompt" not in st.session_state: st.session_state._debug_prompt = None
+    if "_debug_context" not in st.session_state: st.session_state._debug_context = None
 
 
 def assistant() -> ReliabilityAssistant:
@@ -466,6 +349,42 @@ def run_commentary(prompt: str) -> None:
     if sel is not None:
         focus = {"entity_type": sel.entity_type, "entity_id": sel.entity_id}
 
+    # =========================================================================
+    # Handle Multi-Step Prompt Packs ("Deep Dive")
+    # =========================================================================
+    if prompt.startswith("PACK:"):
+        pack_key = prompt.split(":", 1)[1]
+        if pack_key in PROMPT_PACKS:
+            pack = PROMPT_PACKS[pack_key]
+            
+            progress_msg = st.toast(f"🔎 Starting Deep Dive: {pack.name}...", icon="🚀")
+            
+            st.session_state.commentary.append({
+                "prompt": f"**Executing Prompt Pack:** `{pack.name}`",
+                "response": f"_{pack.description}_\n\nRunning {len(pack.steps)} analysis steps..."
+            })
+            
+            for i, step in enumerate(pack.steps, 1):
+                with st.spinner(f"Step {i}/{len(pack.steps)}: {step.key}..."):
+                    result = assistant().answer(step.prompt, focus=focus)
+                    
+                    st.session_state.commentary.append({
+                        "prompt": f"**Step {i}: {step.key}**", 
+                        "response": result.answer
+                    })
+                    
+                    if st.session_state.debug_mode:
+                        st.session_state._debug_graph = result.graph_explanation
+                        st.session_state._debug_prompt = result.llm_prompt
+                        st.session_state._debug_context = result.llm_context
+                    
+                    time.sleep(0.5)
+            
+            progress_msg.toast(f"✅ Deep Dive Complete: {pack.name}", icon="🏁")
+            return
+    # =========================================================================
+
+    # Standard Single-Shot Prompt
     result = assistant().answer(prompt, focus=focus)
     st.session_state.commentary.append({"prompt": prompt, "response": result.answer})
 
@@ -479,34 +398,19 @@ def run_commentary(prompt: str) -> None:
         st.session_state._debug_context = None
 
 
-# ============================
-# Chip rendering (taxonomy + deterministic)
-# ============================
-
 def render_action_chips(report, sel: SelectionLike) -> None:
     st.markdown(
         """
         <style>
-        div[data-testid="stButton"] {
-            width: 100%;
-        }
+        div[data-testid="stButton"] { width: 100%; }
         div[data-testid="stButton"] > button {
-            width: 100%;
-            border-radius: 999px;
-            padding: 0.30rem 0.65rem;
-            margin: 0.15rem 0;
-            border: 1px solid rgba(49, 51, 63, 0.25);
-            background-color: rgba(240, 242, 246, 0.6);
-            font-size: 0.78rem;
-            line-height: 1.05rem;
-            font-weight: 500;
-            white-space: normal !important;
-            height: auto !important;
-            text-align: center;
+            width: 100%; border-radius: 999px; padding: 0.30rem 0.65rem; margin: 0.15rem 0;
+            border: 1px solid rgba(49, 51, 63, 0.25); background-color: rgba(240, 242, 246, 0.6);
+            font-size: 0.78rem; line-height: 1.05rem; font-weight: 500; white-space: normal !important;
+            height: auto !important; text-align: center;
         }
         div[data-testid="stButton"] > button:hover {
-            background-color: rgba(240, 242, 246, 0.9);
-            border-color: rgba(49, 51, 63, 0.45);
+            background-color: rgba(240, 242, 246, 0.9); border-color: rgba(49, 51, 63, 0.45);
         }
         </style>
         """,
@@ -520,35 +424,23 @@ def render_action_chips(report, sel: SelectionLike) -> None:
         rc_id = getattr(rc, "id", None)
         stable_id = rc_id or f"report:{_safe_slug(report.key)}:{_safe_slug(sel.entity_type)}:{_safe_slug(sel.entity_id)}:{idx}"
         grp = getattr(rc, "group", None) or "Diagnose"
-        report_chips.append(
-            Chip(
-                id=stable_id,
-                label=rc.label,
-                prompt=rc.prompt,
-                focus=getattr(rc, "focus", True),
-                group=grp,
-            )
-        )
+        report_chips.append(Chip(id=stable_id, label=rc.label, prompt=rc.prompt, focus=getattr(rc, "focus", True), group=grp))
 
     core_chips = _default_chips_for_selection(report.name, sel)
-
     seen = set()
     combined: List[Chip] = []
     for c in (report_chips + core_chips):
-        if c.id in seen:
-            continue
+        if c.id in seen: continue
         seen.add(c.id)
         combined.append(c)
 
-    if not combined:
-        return
-
+    if not combined: return
     st.markdown("**Actions:**")
     _render_chip_groups(combined, key_prefix=f"chip:{report.key}")
 
 
 # ============================
-# App UI
+# Main Execution
 # ============================
 
 st.set_page_config(page_title="Reliability Copilot", page_icon="🛡️", layout="wide")
@@ -557,89 +449,71 @@ init_state()
 reports = get_reports()
 report_map = get_report_map()
 
-# ---------------------------------------------------------------------------
-# FIX: Handle missing/empty report keys gracefully
-# ---------------------------------------------------------------------------
-
-# 1. Safety Check: Stop if no reports exist
 if not report_map:
     st.error("No reports found! Please define reports in src/reports/registry.py.")
     st.stop()
 
-# 2. Resolve Selection: Ensure selected key is valid
 if st.session_state.selected_report_key not in report_map:
-    # Try the configured default first
     def_key = get_default_report_key()
-    if def_key and def_key in report_map:
-        st.session_state.selected_report_key = def_key
-    else:
-        # Fallback: Force pick the first available report
-        st.session_state.selected_report_key = list(report_map.keys())[0]
+    st.session_state.selected_report_key = def_key if (def_key and def_key in report_map) else list(report_map.keys())[0]
 
-# 3. Load Current Report (Safe now)
 current_report = report_map[st.session_state.selected_report_key]
-
-# ---------------------------------------------------------------------------
 
 st.title("🛡️ Reliability Copilot")
 st.caption("Deterministic reporting + contextual AI commentary")
 
 with st.sidebar:
     _render_sidebar_report_nav(report_map)
-
     st.header("Controls")
     st.checkbox("Debug mode", key="debug_mode")
     st.caption(f"DB: `{st.session_state.db_path}`")
-
     if st.button("Clear selection"):
         st.session_state.selection = None
+        st.session_state.commentary = []  # Added clearing here too
         st.rerun()
-
     if st.button("Clear commentary"):
         st.session_state.commentary = []
         st.session_state.pending_prompt = None
         st.rerun()
-
 
 viz_col, comm_col = st.columns([2.2, 1.0], gap="large")
 
 with viz_col:
     st.subheader(current_report.name)
     st.caption(current_report.description)
-
     df = current_report.load_df(st.session_state.db_path, st.session_state.filters)
     current_report.render_viz(df, st.session_state.filters)
-
     selections = current_report.build_selections(df, st.session_state.filters)
     if selections:
         st.markdown("**Select an item:**")
         cols = st.columns(3)
         for i, sel in enumerate(selections):
-            # FIX: Append :{i} to ensure unique keys when one resource has multiple log patterns
             sel_key = f"select:{current_report.key}:{_safe_slug(sel.entity_type)}:{_safe_slug(sel.entity_id)}:{i}"
             with cols[i % 3]:
                 if st.button(sel.label, key=sel_key):
                     st.session_state.selection = sel
+                    # === CLEAR COMMENTARY ON SELECTION CHANGE ===
+                    st.session_state.commentary = []
+                    # ============================================
                     st.session_state.pending_prompt = f"Tell me more about {sel.entity_type} {sel.entity_id}."
                     st.rerun()
 
 with comm_col:
     st.subheader("Commentary")
-
     sel = st.session_state.selection
     if sel is None:
         st.info("Select an item in the report to generate commentary.")
     else:
         st.success(f"Selection: {sel.entity_type} • {sel.label}")
         render_action_chips(current_report, sel)
-
+    
     st.markdown("---")
-
     if st.session_state.commentary:
-        last = st.session_state.commentary[-1]
-        st.markdown(last["response"])
-        with st.expander("Show prompt", expanded=False):
-            st.code(last["prompt"])
+        for item in st.session_state.commentary:
+            with st.chat_message("user"):
+                st.write(item["prompt"])
+            with st.chat_message("assistant"):
+                st.markdown(item["response"])
     else:
         st.caption("No commentary yet.")
 
@@ -648,7 +522,6 @@ with comm_col:
             if getattr(current_report, "debug_sql", None):
                 st.markdown("**Report SQL**")
                 st.code(current_report.debug_sql, language="sql")
-
             if st.session_state.commentary:
                 if st.session_state._debug_graph:
                     st.markdown("**Graph / retrieval explanation**")
@@ -656,25 +529,15 @@ with comm_col:
                 if st.session_state._debug_prompt:
                     st.markdown("**LLM prompt**")
                     st.code(st.session_state._debug_prompt)
-                if st.session_state._debug_context:
-                    st.markdown("**LLM context**")
-                    st.code(st.session_state._debug_context)
 
     st.markdown("---")
-
     with st.form("freeform", clear_on_submit=False):
-        free = st.text_area(
-            "Ask a follow-up",
-            placeholder="Ask a follow-up about this report or selection…",
-            height=110,
-            label_visibility="collapsed",
-        )
+        free = st.text_area("Ask a follow-up", placeholder="Ask about this selection…", height=100, label_visibility="collapsed")
         submitted = st.form_submit_button("Ask")
 
     if submitted and free.strip():
         context = [f"Report: {current_report.name}"]
-        if sel:
-            context.append(f"Selected: {sel.entity_type} {sel.entity_id}")
+        if sel: context.append(f"Selected: {sel.entity_type} {sel.entity_id}")
         prompt = f"{free.strip()}\n\nContext:\n" + "\n".join(context)
         st.session_state.pending_prompt = prompt
         st.rerun()
