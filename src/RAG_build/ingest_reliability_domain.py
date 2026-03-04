@@ -1,4 +1,4 @@
-# src/ingest_reliability_domain.py
+# src/RAG_build/ingest_reliability_domain.py
 """
 Build RAG documents for the Reliability Copilot SQLite schema.
 

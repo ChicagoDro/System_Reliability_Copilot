@@ -19,10 +19,10 @@ The result is an **enterprise-grade AI copilot** that is explainable, debuggable
 
 ## Core Design Principle
 
-> **Don’t let the model guess what the user meant.**
+> **Don't let the model guess what the user meant.**
 > Use deterministic reports to define intent, and use the LLM to explain the result with context.
 
-This project deliberately avoids “blank chat box” UX. Instead:
+This project deliberately avoids "blank chat box" UX. Instead:
 
 * **Reports** define the operational context (e.g., "Recent Incidents")
 * **Clicks** define the specific entity to investigate
@@ -98,7 +98,7 @@ Action chips are organized into four operational lanes:
             ▼
 ┌─────────────────────────┐
 │ Prompt Builder          │
-│ “Draft Post-Mortem…”    │
+│ "Draft Post-Mortem…"    │
 └───────────┬─────────────┘
             │
             ▼
@@ -106,61 +106,143 @@ Action chips are organized into four operational lanes:
 │ LLM Commentary Answer   │
 │ + Sources (Runbooks)    │
 └─────────────────────────┘
+```
+
+---
+
+## Neo4j: The Database of Choice
+
+The System Reliability Copilot is built on **Neo4j AuraDB** as its unified data backend — replacing separate FAISS vector stores and an in-memory graph with a single, purpose-built graph + vector database.
+
+### Why Neo4j for a Reliability Copilot?
+
+Reliability data is **inherently a graph problem**. Infrastructure isn't a collection of isolated rows — it's a web of relationships:
 
 ```
+Job → uses → ComputeConfig
+Job → owned_by → Team (Slack channel, PagerDuty rotation)
+Job → incurred_cost → CostRecord
+Incident → affected → Resource → has_baseline → MetricNorm
+Change → modified → Resource ← run_of_resource ← FailedRun
+```
+
+A relational database forces you to JOIN across many tables to reconstruct this context. A vector database gives you semantic similarity but loses the relationships entirely. Neo4j gives you both at once.
+
+### Three Problems, One Database
+
+| Problem | Traditional Approach | Neo4j Approach |
+|---|---|---|
+| Telemetry graph traversal | In-memory dict + BFS | Native Cypher path queries `(n)-[*0..3]-(m)` |
+| Vendor docs similarity search | Separate FAISS index | Native vector index on `VendorDoc` nodes |
+| Runbook retrieval | Separate FAISS index | Native vector index on `Runbook` nodes |
+
+### Specific Capabilities That Matter Here
+
+**1. Graph-native ownership and escalation chains**
+When an incident fires, the copilot traverses: `Incident → affected → Resource → owned_by → Owner` in a single Cypher query. No joins. No cross-index lookups.
+
+**2. Change correlation**
+"Why did this job fail?" often means finding what changed right before the failure. Cypher makes this a natural traversal: `FailedRun → run_of_resource → Resource ← changed ← ChangeRecord`.
+
+**3. Hybrid graph + vector queries**
+Neo4j 5.x allows vector similarity search directly on graph nodes, enabling queries like: *"Find runbooks semantically similar to this error message, then traverse to the resources and teams they apply to."* This is not possible with FAISS + a separate graph.
+
+**4. LLM-based routing maps cleanly to query strategy**
+The `chat_orchestrator` uses an LLM router to decide between `use_graph`, `use_vendor_docs`, and `use_runbooks`. In Neo4j, all three are just different Cypher + vector index patterns against the same connection — no infrastructure switching.
+
+**5. Production scalability**
+AuraDB is a fully managed cloud service. No FAISS files to re-index, no in-memory graphs to rebuild on startup. The same graph that powers a demo scales to millions of nodes for production telemetry.
+
+### LangChain Integration
+
+Neo4j integrates natively with the LangChain ecosystem used throughout this project:
+
+* `Neo4jVector` — drop-in replacement for `FAISS` with identical `similarity_search()` API
+* `Neo4jGraph` — structured graph access for Cypher-based retrieval
+* Full LangSmith tracing across all Neo4j-backed retrieval steps
 
 ---
 
 ## Tri-Corpus Architecture: Telemetry, Docs, & Runbooks
 
-The System Reliability Copilot uniquely combines **three** distinct sources of truth to answer questions. It doesn't just "chat" with one index; it routes intent to the right knowledge base.
+The System Reliability Copilot combines **three** distinct sources of truth — all stored in Neo4j — and routes questions to the right knowledge base using an LLM router.
 
-### 1. Telemetry Corpus (The "What")
+### 1. Telemetry Graph (The "What")
 
-* **Source:** SQLite database (`incident`, `run`, `resource`, `log_record`).
-* **Format:** Knowledge Graph (GraphRAG).
-* **Role:** Answers "What happened?", "Who is affected?", "When did it fail?".
+* **Source:** SQLite → ingested into Neo4j as `ReliabilityNode` nodes with typed relationships.
+* **Format:** Native property graph with full-text index (`reliabilityFullText`).
+* **Role:** Answers "What happened?", "Who is affected?", "What changed?", "Is this normal?".
 
-### 2. Vendor Docs Corpus (The "Theory")
+### 2. Vendor Docs (The "Theory")
 
-* **Source:** Official Databricks, Snowflake, Kubernetes, and Airflow documentation.
-* **Format:** Vector Index (FAISS).
-* **Role:** Answers "What does this error code mean?", "How does autoscaling work?".
+* **Source:** Official Databricks, Snowflake, Kubernetes, Airflow, dbt, and SRE documentation.
+* **Format:** Neo4j vector index on `VendorDoc` nodes.
+* **Role:** Answers "What does this error mean?", "How does autoscaling work?".
 
-### 3. Runbooks Corpus (The "Playbook")
+### 3. Runbooks (The "Playbook")
 
 * **Source:** Internal markdown runbooks (`src/runbooks/`).
-* **Format:** Vector Index (FAISS).
+* **Format:** Neo4j vector index on `Runbook` nodes.
 * **Role:** Answers "How do I fix this?", "Who do I page?", "What is the SLA?".
 
-### Intelligent Routing
+### LLM-Based Intelligent Routing
 
-The `ReliabilityAssistant` automatically assembles context from all three sources:
+Instead of brittle keyword matching, the `ReliabilityAssistant` uses an LLM router to decide which backends to query for each question:
 
-> "The **Telemetry** shows Job A failed at 10:00 AM. **Vendor Docs** explain that `Error 429` is a rate limit. **Runbooks** prescribe scaling the cluster to `2x-large` as the fix."
+```
+Question → LLM Router → RouterDecision {use_graph, use_vendor_docs, use_runbooks}
+                ↓
+        RunnableBranch (LCEL)
+        ├── ownership   → Cypher graph traversal
+        ├── change_history → Cypher graph traversal
+        ├── baseline_check → Cypher graph traversal
+        └── general → Neo4j graph + vector retrieval → LLM answer
+```
+
+> "The **Telemetry graph** shows Job A failed at 10:00 AM. **Vendor Docs** explain that `Error 429` is a rate limit. **Runbooks** prescribe scaling the cluster to `2x-large` as the fix."
+
+---
+
+## LangSmith Observability
+
+Every step of the pipeline is traced end-to-end via **LangSmith**:
+
+```
+reliability_assistant
+├── router              ← LLM routing decision (latency, tokens)
+└── intent_branch
+    └── general_pipeline
+        ├── retrieve    ← Neo4j graph + vector retrieval
+        ├── build_context
+        └── generate    ← LLM answer generation
+```
+
+Enable tracing by setting `LANGCHAIN_TRACING_V2=true` in your `.env`.
 
 ---
 
 ## Dataset Overview
 
-All data lives in a local **SQLite database**: `data/reliability.db`.
+All operational data is seeded into **SQLite** (`data/reliability.db`) and ingested into Neo4j.
 
-Generated from:
+**SQL source files:** `src/setup/`
+* `created_tables.sql` — schema definition
+* `seed_reliability_data.sql` — demo dataset
 
-* `sql/created_tables.sql`
-* `sql/seed_reliability_data.sql` (Unified Master Dataset)
+### Key Tables → Graph Node Types
 
-### Key Tables
-
-| Table | Description |
-| --- | --- |
-| `platform` | Cloud/Data platforms (AWS, Databricks, Snowflake, K8s, Airflow, dbt) |
-| `environment` | Deployment envs (Prod, Stage, Dev) |
-| `resource` | Jobs, tables, buckets, pipelines, services |
-| `run` | Execution history, status, and duration |
-| `incident` | Outages, alerts, and tickets |
-| `log_record` | System logs and error traces |
-| `metric_point` | Time-series metrics (Cost, Row Counts, Latency) |
+| SQLite Table | Neo4j Node Type | Description |
+|---|---|---|
+| `platform` | (metadata) | Cloud/Data platforms |
+| `resource` | `ReliabilityNode {node_type: "resource"}` | Jobs, pipelines, services |
+| `run` | `ReliabilityNode {node_type: "run"}` | Execution history |
+| `incident` | `ReliabilityNode {node_type: "incident"}` | Outages and alerts |
+| `log_record` | (via metrics) | System logs |
+| `metric_point` | `ReliabilityNode {node_type: "metric"}` | Time-series metrics |
+| `resource_owner` | `ReliabilityNode {node_type: "owner"}` | Team ownership |
+| `resource_change` | `ReliabilityNode {node_type: "change"}` | Deployments, config changes |
+| `resource_baseline` | `ReliabilityNode {node_type: "baseline"}` | Performance norms |
+| `sla_policy` | `ReliabilityNode {node_type: "sla"}` | SLA definitions |
 
 ---
 
@@ -168,24 +250,60 @@ Generated from:
 
 ```text
 SQLite Reliability DB
-   ↓ SQL
-Reports Registry
+   ↓ ingest_reliability_graph_to_neo4j()
+Neo4j AuraDB
+   ├── ReliabilityNode graph  (telemetry, ownership, change history, baselines)
+   ├── VendorDoc vector index (Databricks, Snowflake, K8s, Airflow, dbt docs)
+   └── Runbook vector index   (internal operational playbooks)
+        ↓
+LLM Router (LCEL)
+   ↓
+ReliabilityAssistant (chat_orchestrator.py)
    ↓
 Streamlit Dashboard
-   - Visualization Pane
-   - Commentary Pane (LLM)
-   - Action Chips (Diagnose/Fix)
-   ↓
-Prompt Builder + Context Assembler
-   ↓
-GraphRAG (Telemetry)
-   +
-Docs RAG (Vendor Docs)
-   +
-Runbooks RAG (Internal Procedures)
-   ↓
-LLM
+   ├── Reports (SQL → SQLite)
+   ├── Action Chips (deterministic prompts)
+   └── Commentary Pane (LLM answer + cited sources)
+```
 
+---
+
+## Project Structure
+
+```text
+src/
+├── app.py                        # Streamlit UI entrypoint
+├── config.py                     # Shared config and env vars
+│
+├── RAG_chatbot/                  # Core retrieval + reasoning layer
+│   ├── chat_orchestrator.py      # LCEL pipeline, LLM router, answer generation
+│   ├── graph_model.py            # SQLite → Neo4j graph ingestion
+│   ├── graph_retriever.py        # Neo4j Cypher-based graph retrieval
+│   ├── investigation_engine.py   # Investigation agent logic
+│   └── prompts_deterministic.py  # Deterministic prompt packs (action chips)
+│
+├── RAG_build/                    # One-time index build scripts
+│   ├── ingest_reliability_domain.py  # SQLite → RagDoc builder
+│   ├── ingest_embed_index.py         # Legacy FAISS builder (reference)
+│   ├── ingest_vendor_docs.py         # Web scraper → Neo4j VendorDoc index
+│   └── ingest_runbooks.py            # Markdown → Neo4j Runbook index
+│
+├── setup/                        # Database initialization
+│   ├── created_tables.sql
+│   └── seed_reliability_data.sql
+│
+├── reports/                      # Streamlit report modules
+│   ├── registry.py
+│   ├── recent_incidents.py
+│   ├── failing_resources.py
+│   ├── run_history.py
+│   ├── sla_breaches.py
+│   ├── log_patterns.py
+│   ├── metric_anomalies.py
+│   ├── cost_overview.py
+│   └── service_health.py
+│
+└── runbooks/                     # Internal operational runbooks (markdown)
 ```
 
 ---
@@ -195,9 +313,8 @@ LLM
 ### 1. Clone
 
 ```bash
-git clone [https://github.com/ChicagoDro/AI-Portfolio](https://github.com/ChicagoDro/AI-Portfolio)
-cd AI-Portfolio
-
+git clone https://github.com/ChicagoDro/System_Reliability_Copilot
+cd System_Reliability_Copilot
 ```
 
 ### 2. Virtual Environment
@@ -205,74 +322,58 @@ cd AI-Portfolio
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-
 ```
 
 ### 3. Install Dependencies
 
 ```bash
 pip install -r requirements.txt
-
 ```
 
 ### 4. Environment Variables
 
-Create `.env`:
+Copy `.env.example` to `.env` and fill in your keys:
 
 ```env
-LLM_PROVIDER=openai
-OPENAI_API_KEY=sk-...
+# LLM
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=your_key_here
 
+# Neo4j AuraDB
+NEO4J_URI=neo4j+s://<instance>.databases.neo4j.io
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=your_password_here
+NEO4J_DATABASE=neo4j
+
+# LangSmith (optional but recommended)
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=your_key_here
+LANGCHAIN_PROJECT=system-reliability-copilot
 ```
 
 ---
 
-## Running the System (Unified Pipeline)
+## Running the System
 
-### Available Targets
+### Make Targets
 
-* `make all` – **Recommended**: Builds DB, Ingests Evidence, Runbooks, & Docs, then starts App.
-* `make db` – Rebuild & seed SQLite database.
-* `make evidence` – Build Telemetry (Graph) index.
-* `make runbooks` – Build Runbooks index.
-* `make docs_index` – Build Unified Vendor Docs index.
-* `make app` – Launch Streamlit UI.
-* `make clean` – Remove all artifacts and indexes.
+| Target | Description |
+|---|---|
+| `make all` | Full pipeline: deps → db → Neo4j ingestion → app |
+| `make db` | Rebuild and seed SQLite database |
+| `make ingest_graph` | Ingest telemetry graph into Neo4j |
+| `make ingest_runbooks` | Index runbooks into Neo4j vector store |
+| `make ingest_docs` | Index vendor docs into Neo4j vector store |
+| `make app` | Launch Streamlit UI |
+| `make clean` | Remove local SQLite DB |
 
 ### First Run
 
 ```bash
 make all
-
 ```
 
 Streamlit will launch at: `http://localhost:8501`
-
----
-
-## Project Structure
-
-```text
-src/
-  app.py                    # Streamlit UI
-  chat_orchestrator.py      # Tri-corpus routing + prompts
-  graph_model.py            # Nodes + edges definition
-  graph_retriever.py        # GraphRAG traversal for Telemetry
-  ingest_reliability_domain.py # SQLite -> Graph ingestion
-  ingest_runbooks.py        # Markdown -> Vector index
-  ingest_vendor_docs.py     # Unified Web Scraper -> Vector index
-  reports/
-    registry.py             # Report definitions
-    recent_incidents.py     # Incident report logic
-    failing_resources.py    # Resource health report logic
-    run_history.py          # Execution timeline logic
-    sla_breaches.py         # Performance regression logic
-    log_patterns.py         # Error signature logic
-    metric_anomalies.py     # Data quality logic
-    cost_overview.py        # Cloud spend logic
-    service_health.py       # Infra/Golden Signals logic
-
-```
 
 ---
 
@@ -282,83 +383,51 @@ This project demonstrates how to build **SRE-grade AI tools** that:
 
 * Are **deterministic** (reports) instead of probabilistic (chat).
 * Separate **facts** (telemetry) from **policy** (runbooks).
-* Support **multi-hop reasoning** (GraphRAG) across interconnected infrastructure.
-* Earn trust from engineering teams by citing sources (`[Runbook]`, `[Docs]`).
+* Support **multi-hop reasoning** across interconnected infrastructure using Neo4j graph traversal.
+* Use a **single database** for graph, full-text, and vector search — eliminating index sprawl.
+* Earn trust from engineering teams by citing sources (`[Runbook]`, `[Docs]`, `[Ownership]`).
 
 > **Chat-first copilots guess the problem. Reliability copilots show the data and cite the fix.**
 
 ---
 
-# 🏗️ Production Architecture Proposal
+# Production Architecture Proposal
 
-This section outlines how to transition from the current "Seed Data" approach to a live production integration.
+This section outlines how to transition from the current demo dataset to live production integration.
 
-## 1. High-Level Data Flow
+## High-Level Data Flow
 
-Instead of hardcoded SQL inserts, we introduce a **Collector Layer**. This layer runs on a schedule (e.g., every 5-15 minutes), fetches raw metadata, normalizes it, and upserts it into the Copilot database.
+Instead of hardcoded SQL inserts, introduce a **Collector Layer** that runs on a schedule (every 5–15 minutes), fetches raw metadata from platform APIs, normalizes it, and upserts it directly into Neo4j.
 
-**The Golden Rule:** *Do not build agents into the pipelines.* (i.e., do not force developers to add `copilot.track()` to their Python code). Instead, rely on **Observer Patterns** (APIs, System Tables, Logs) to be non-intrusive.
+**The Golden Rule:** *Do not build agents into the pipelines.* Rely on **Observer Patterns** (APIs, System Tables, Webhooks) to stay non-intrusive.
 
-## 2. Platform Integration Strategy
+## Platform Integration Strategy
 
-Here is how we map real-world signals to our schema:
+### Databricks
+* **Resources & Runs:** Query System Tables (`system.lakeflow.jobs`, `system.compute.clusters`) or poll Jobs API 2.1.
+* **Cost:** Query `system.billing.usage` for DBU attribution per job.
+* **Logs:** Fetch Driver Logs via API only on failure; subscribe to Audit Logs for state changes.
 
-### 🧱 Databricks (The Heavy Lifter)
-
-* **Resources & Runs:** Query **System Tables** (`system.lakeflow.jobs`, `system.compute.clusters`) or poll the **Jobs API 2.1**.
-* **Cost:** Query `system.billing.usage` for precise DBU attribution per job.
-* **Logs:** Do NOT ingest all logs (too expensive). Instead, query the **Driver Logs** via API only upon failure, or subscribe to **Audit Logs** (`system.access.audit`) for permission/state changes.
-* **Data Quality:** Hook into **Delta Live Tables (DLT)** event logs or **Databricks Lakehouse Monitoring** tables.
-
-### ❄️ Snowflake
-
+### Snowflake
 * **Runs & Cost:** Query `SNOWFLAKE.ACCOUNT_USAGE.TASK_HISTORY` and `QUERY_HISTORY`.
-* **Data Quality:** Since Snowflake doesn't natively "push" DQ failures, we can parse **dbt test results** (see below) or ingest from a DQ tool (Monte Carlo, Soda) via API.
+* **Data Quality:** Parse dbt test results or integrate via Monte Carlo / Soda APIs.
 
-### ☸️ Kubernetes (Services)
+### Kubernetes
+* **Crash/Health:** Run a lightweight K8s Informer/Watcher watching for `OOMKilled`, `CrashLoopBackOff` pod events.
+* **Logs:** Integrate with existing log aggregator (Datadog/Splunk) and fetch logs just-in-time for failed runs.
 
-* **Crash/Health:** Run a lightweight **K8s Informer/Watcher** (Python script) in the cluster. It watches for `Pod` events (OOMKilled, CrashLoopBackOff) and maps them to `Run` failures.
-* **Logs:** Integrate with the existing Log Aggregator (Datadog/Splunk/CloudWatch). The Copilot calls the **Log Search API** specifically for the time window of a failed deployment.
+### Airflow
+* **Runs:** Poll the Airflow REST API or query the metadata DB (Postgres) directly.
 
-### 💨 Airflow
+### dbt
+* **Runs & Tests:** Parse `run_results.json` and `manifest.json` artifacts from dbt Cloud or Core.
 
-* **Runs:** Poll the **Airflow REST API** (`/dags/{dag_id}/dagRuns`) or query the Airflow Metadata DB (Postgres) directly (faster).
-* **Ingestion Errors:** Parse `task_instance` tables for failure reasons.
+## Integration Summary
 
-### 🛠️ dbt (Transformations)
-
-* **Runs & Tests:** Parse the `run_results.json` and `manifest.json` artifacts generated by dbt Cloud or Core. These contain precise pass/fail states for tests and models.
-
-## 3. The "Missing Link": User Configuration UI
-
-You cannot automate everything. Some business context exists only in human heads. You need a simple **Streamlit Admin UI** (or a YAML config repo) for:
-
-1. **SLA Definitions:**
-* *Problem:* An API tells you a job took 50 minutes. It *doesn't* tell you if that's bad.
-* *UI Need:* A form to set `Max Runtime`, `Freshness SLA` (e.g., "Must land by 8 AM"), and `Business Priority` (P0/P1) for critical resources.
-
-
-2. **Incident Mapping:**
-* *Problem:* How do we know which PagerDuty service maps to which Databricks Job?
-* *UI Need:* A "Service Registry" to map `pagerduty_service_id` <--> `copilot_resource_id`.
-
-
-3. **Owner Attribution:**
-* *Problem:* Cloud tags are often messy or missing.
-* *UI Need:* An override table to assign "Team Ownership" to resources found in the wild.
-
-
-
-## 4. Integration Summary Table
-
-| Copilot Entity | Primary Source Strategy | Fallback / UI Input |
-| --- | --- | --- |
-| **Resource** | **Discovery:** Scan Databricks Jobs API, K8s Services, Airflow DAG bags. | **Manual:** User tags "Critical Assets" in Admin UI. |
-| **Run** | **Pull:** System Tables (DBX/Snow), REST API (Airflow). | **Push:** Webhook endpoint for custom scripts. |
-| **Incident** | **Webhook:** PagerDuty / OpsGenie / ServiceNow outgoing webhooks. | **Manual:** "Create Incident" button in Copilot. |
-| **Logs** | **Just-in-Time:** Fetch logs *only* for failed run IDs via Aggregator API. | **None:** Storing all logs is anti-pattern. |
-| **Cost** | **Billing Tables:** `system.billing` (DBX), `USAGE` schemas (Snow). | **Manual:** Fixed daily costs for K8s services. |
-
-```
-
-```
+| Copilot Entity | Primary Source | Fallback |
+|---|---|---|
+| **Resource** | Scan platform APIs (Databricks Jobs, K8s Services, Airflow DAGs) | Manual tag in Admin UI |
+| **Run** | System Tables (DBX/Snow), REST API (Airflow) | Webhook endpoint |
+| **Incident** | PagerDuty / OpsGenie / ServiceNow outgoing webhooks | Manual "Create Incident" |
+| **Logs** | Just-in-time fetch for failed run IDs via log aggregator API | None (storing all logs is anti-pattern) |
+| **Cost** | Billing tables (`system.billing`, Snowflake `USAGE`) | Fixed daily costs for K8s |

@@ -23,14 +23,24 @@ google-generativeai
 pypdf
 
 
-# Vector DB
+# Vector DB (legacy reference — active store is Neo4j)
 faiss-cpu
+
+# Neo4j graph + vector database
+neo4j
+langchain-neo4j
 
 # Graph processing
 networkx
 
 # BM25 Retrieve
 rank_bm25
+
+# LangSmith observability + evaluation
+langsmith
+
+# Testing
+pytest
 
 # App UI
 streamlit

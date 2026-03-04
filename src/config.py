@@ -105,7 +105,9 @@ OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o")
 OPENAI_EMBED_MODEL = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-large")
 
 GEMINI_CHAT_MODEL = os.getenv("GEMINI_CHAT_MODEL", "gemini-1.5-pro")
-GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "models/text-embedding-004")
+# Support both GEMINI_EMBED_MODEL and GEMINI_EMBEDDING_MODEL (legacy key)
+# Default to gemini-embedding-001 which is supported by the v1beta API used by langchain-google-genai 4.x
+GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL") or os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
 
 DEFAULT_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.2"))
 
@@ -118,3 +120,15 @@ def get_embed_model_name() -> str:
     if LLM_PROVIDER == "openai": return OPENAI_EMBED_MODEL
     if LLM_PROVIDER == "gemini": return GEMINI_EMBED_MODEL
     raise ValueError(f"Unsupported LLM_PROVIDER: {LLM_PROVIDER}")
+
+# --------------------------------------------------------------------------------------
+# Neo4j
+# --------------------------------------------------------------------------------------
+NEO4J_URI      = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_USERNAME = os.getenv("NEO4J_USERNAME", "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
+NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
+
+# Vector index names (created during ingestion, referenced during retrieval)
+NEO4J_VENDOR_DOCS_INDEX = os.getenv("NEO4J_VENDOR_DOCS_INDEX", "vendor_docs")
+NEO4J_RUNBOOKS_INDEX    = os.getenv("NEO4J_RUNBOOKS_INDEX",    "runbooks")

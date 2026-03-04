@@ -309,15 +309,85 @@ def build_graph(db_path: str, **kwargs):
     g = {}
     for n in nodes:
         g[n.id] = {
-            "id": n.id, 
-            "type": n.type, 
-            "title": n.title, 
-            "text": n.text, 
+            "id": n.id,
+            "type": n.type,
+            "title": n.title,
+            "text": n.text,
             "attrs": n.attrs,
             "neighbors": []
         }
     for e in edges:
         if e.src in g and e.dst in g:
             g[e.src]["neighbors"].append({"id": e.dst, "relation": e.relation_type})
-            g[e.dst]["neighbors"].append({"id": e.src, "relation": e.relation_type}) 
+            g[e.dst]["neighbors"].append({"id": e.src, "relation": e.relation_type})
     return g
+
+
+# ---------------------------------------------------------------------------
+# Neo4j ingestion
+# ---------------------------------------------------------------------------
+
+def ingest_reliability_graph_to_neo4j(
+    db_path: str,
+    uri: str,
+    username: str,
+    password: str,
+    database: str = "neo4j",
+) -> Tuple[int, int]:
+    """
+    Reads the reliability graph from SQLite and writes it into Neo4j.
+    Clears all existing ReliabilityNode data before re-ingesting.
+    Returns (node_count, edge_count).
+    """
+    from collections import defaultdict
+    from neo4j import GraphDatabase
+
+    nodes, edges = build_reliability_graph(db_path)
+
+    driver = GraphDatabase.driver(uri, auth=(username, password))
+    try:
+        with driver.session(database=database) as session:
+            # 1. Clear existing graph data
+            session.run("MATCH (n:ReliabilityNode) DETACH DELETE n")
+
+            # 2. Full-text index (idempotent)
+            session.run("""
+                CREATE FULLTEXT INDEX reliabilityFullText IF NOT EXISTS
+                FOR (n:ReliabilityNode) ON EACH [n.title, n.text]
+            """)
+
+            # 3. Ingest nodes in one batched statement
+            node_data = [
+                {
+                    "node_id":   n.id,
+                    "node_type": n.type,
+                    "title":     n.title,
+                    "text":      n.text,
+                    "attrs_json": json.dumps(n.attrs),
+                }
+                for n in nodes
+            ]
+            session.run(
+                "UNWIND $nodes AS props CREATE (n:ReliabilityNode) SET n = props",
+                nodes=node_data,
+            )
+
+            # 4. Ingest edges grouped by relationship type (avoids dynamic rel-type issue)
+            edges_by_type: Dict[str, List[Dict[str, str]]] = defaultdict(list)
+            for e in edges:
+                rel = e.relation_type.upper().replace("-", "_").replace(" ", "_").replace(".", "_")
+                edges_by_type[rel].append({"src": e.src, "dst": e.dst})
+
+            for rel_type, pairs in edges_by_type.items():
+                session.run(
+                    f"UNWIND $pairs AS p "
+                    f"MATCH (s:ReliabilityNode {{node_id: p.src}}) "
+                    f"MATCH (d:ReliabilityNode {{node_id: p.dst}}) "
+                    f"MERGE (s)-[:{rel_type}]->(d)",
+                    pairs=pairs,
+                )
+
+    finally:
+        driver.close()
+
+    return len(nodes), len(edges)

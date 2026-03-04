@@ -1,12 +1,12 @@
-# src/ingest_embed_index.py
+# src/RAG_build/ingest_embed_index.py
 """
 Embed Reliability Copilot RAG docs and persist a FAISS index.
 
 Vector DB ingestion entrypoint for the Reliability Copilot schema.
 
 Examples:
-  python -m src.ingest_embed_index --db-path data/reliability.db --mode lite
-  python -m src.ingest_embed_index --db-path data/reliability.db --mode demo --index_name reliability_demo
+  python -m src.RAG_build.ingest_embed_index --db-path data/reliability.db --mode lite
+  python -m src.RAG_build.ingest_embed_index --db-path data/reliability.db --mode demo --index_name reliability_demo
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
 
 from .ingest_reliability_domain import RagDoc, build_reliability_rag_docs
+from src.config import get_embed_model_name
 
 
 # ----------------------------
@@ -40,9 +41,7 @@ def _get_embeddings(provider: str, model: Optional[str] = None):
                 "OpenAI embeddings selected but langchain_openai is not installed."
             ) from e
 
-        return OpenAIEmbeddings(
-            model=model or os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large")
-        )
+        return OpenAIEmbeddings(model=model or get_embed_model_name())
 
     if provider in ("huggingface", "sentence_transformers", "sbert"):
         try:

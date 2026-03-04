@@ -11,6 +11,18 @@ wheels/
 
 # Private environment variables
 .env
+*.env
+.env.*
+!.env.example
 
+# Local data and legacy indexes
 data/
 indexes/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# IDE
+.vscode/
+.idea/

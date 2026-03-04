@@ -9,11 +9,11 @@ from typing import Dict, List, Optional, Tuple
 
 import streamlit as st
 
-from src.chat_orchestrator import ReliabilityAssistant
+from src.RAG_chatbot.chat_orchestrator import ReliabilityAssistant
 from src.reports.base import SelectionLike
 from src.reports.registry import get_reports, get_report_map, get_default_report_key
-from src.prompts_deterministic import PROMPT_PACKS
-from src.investigation_engine import (
+from src.RAG_chatbot.prompts_deterministic import PROMPT_PACKS
+from src.RAG_chatbot.investigation_engine import (
     InvestigationEngine, 
     get_investigation_plan,
     PLAN_RUN_FAILURE,
