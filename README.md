@@ -4,7 +4,7 @@
 
 **System Reliability Copilot** is a deterministic, report-driven AI assistant for analyzing incidents, platform health, observability, and operational risk across complex data systems.
 
-Originally focused on Databricks cost optimization, this project has evolved into a broader **Reliability Copilot** designed to help SREs and Platform Engineers answer critical questions: *What is broken? Why did it fail? How do we fix it? Who owns it?*
+A **Reliability Copilot** designed to help SREs and Platform Engineers answer critical questions: *What is broken? Why did it fail? How do we fix it? Who owns it?*
 
 Unlike chat-first copilots, this project is **report-driven and deterministic**:
 
@@ -33,28 +33,12 @@ This project deliberately avoids "blank chat box" UX. Instead:
 
 ## Deterministic Reports (Not Chat Guessing)
 
-Each report is powered by explicit SQL and semantic meaning. The system is organized into **Operational Pillars**:
+Each report is powered by explicit SQL and semantic meaning:
 
-### 1. Incident Response
 * **Recent Incidents**: Active outages, severity breakdown, and status timeline.
-* **Incident Severity Breakdown**: Visual distribution of incidents by severity.
-* **MTTR Analysis**: Mean Time To Recovery trends (planned).
-
-### 2. Platform Health
 * **Failing Resources**: Top failing jobs, pipelines, or infrastructure components.
-* **Run History**: Cross-platform execution timeline (Airflow, dbt, K8s, Databricks).
 * **SLA Breaches**: Analysis of jobs exceeding promised completion times or historical baselines.
-* **Zombie Resources**: Active resources with no recent runs (planned).
-
-### 3. Observability
-* **Error Log Volume**: Spike detection and "Signature" analysis of repetitive logs.
-* **Metric Anomalies**: Detection of data drops (e.g., 0 rows) or latency spikes.
 * **Service Health (Golden Signals)**: Latency, Traffic, Errors, and Saturation for infrastructure.
-
-### 4. Cost & Efficiency
-* **Cloud Cost Overview**: Daily spend tracking, week-over-week trends, and top spender identification.
-* **Cost of Downtime**: Estimated financial impact of outages (planned).
-* **Idle Resources**: Provisioned but unused infrastructure (planned).
 
 Reports are the **interface**.
 AI is the **commentary layer**.
@@ -296,11 +280,7 @@ src/
 │   ├── registry.py
 │   ├── recent_incidents.py
 │   ├── failing_resources.py
-│   ├── run_history.py
 │   ├── sla_breaches.py
-│   ├── log_patterns.py
-│   ├── metric_anomalies.py
-│   ├── cost_overview.py
 │   └── service_health.py
 │
 └── runbooks/                     # Internal operational runbooks (markdown)
