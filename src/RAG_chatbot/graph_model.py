@@ -1,7 +1,7 @@
 # src/graph_model.py
 """
-Enhanced Graph Model with Ownership, Change History, and Baselines.
-Nodes: Resource, Run, DQ, Metric, Config, Incident, Owner, Change, Baseline, SLA, Cost.
+Graph Model — SQLite to Neo4j ingestion.
+Nodes: Resource, Run, Metric, Config, Owner, Change, Baseline, SLA.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ def build_reliability_graph(db_path: str, mode: str = "lite", **kwargs) -> Tuple
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
-    # 1. Resources (Enhanced with SLA/Cost metadata)
+    # 1. Resources
     for r in c.execute("SELECT resource_id, name, resource_type, owner, attributes_json FROM resource"):
         nid = f"resource::{r['resource_id']}"
         attrs = safe_json(r['attributes_json'])
@@ -92,7 +92,7 @@ def build_reliability_graph(db_path: str, mode: str = "lite", **kwargs) -> Tuple
         if run['parent_run_id']:
             edges.append(GraphEdge(f"run::{run['parent_run_id']}", nid, "triggers", {}))
 
-    # 4. Run Dependencies (NEW)
+    # 4. Run Dependencies
     try:
         for dep in c.execute("""
             SELECT upstream_run_id, downstream_run_id, dependency_type 
@@ -107,36 +107,7 @@ def build_reliability_graph(db_path: str, mode: str = "lite", **kwargs) -> Tuple
     except sqlite3.OperationalError:
         pass  # Table doesn't exist
 
-    # 5. DQ Failures
-    for dq in c.execute("SELECT dq_result_id, run_id, status, message FROM dq_result WHERE status='FAIL' LIMIT 50"):
-        nid = f"dq::{dq['dq_result_id']}"
-        nodes.append(GraphNode(nid, "dq_result", "DQ Failure", f"Status: {dq['status']}\n{dq['message']}", {}))
-        if dq['run_id']:
-            edges.append(GraphEdge(nid, f"run::{dq['run_id']}", "dq_failed_in_run", {}))
-
-    # 6. Incidents (Enhanced metadata)
-    for inc in c.execute("SELECT incident_id, title, severity, status, summary, attributes_json FROM incident"):
-        nid = f"incident::{inc['incident_id']}"
-        attrs = safe_json(inc['attributes_json'])
-        
-        text = f"Incident: {inc['title']}\nSeverity: {inc['severity']}\nStatus: {inc['status']}\n{inc['summary']}"
-        if 'mttr_target_minutes' in attrs:
-            text += f"\nMTTR Target: {attrs['mttr_target_minutes']} min"
-        if 'estimated_impact_usd' in attrs:
-            text += f"\nEstimated Impact: ${attrs['estimated_impact_usd']:,}"
-        
-        nodes.append(GraphNode(nid, "incident", inc['title'], text, attrs))
-
-    # 7. Incident Resource Links
-    for link in c.execute("SELECT incident_id, resource_id, relation FROM incident_resource"):
-        edges.append(GraphEdge(
-            f"incident::{link['incident_id']}", 
-            f"resource::{link['resource_id']}", 
-            link['relation'], 
-            {}
-        ))
-
-    # 8. Resource Owners (NEW)
+    # 5. Resource Owners
     try:
         for owner in c.execute("""
             SELECT owner_id, resource_id, team_name, oncall_rotation, 
@@ -165,7 +136,7 @@ def build_reliability_graph(db_path: str, mode: str = "lite", **kwargs) -> Tuple
     except sqlite3.OperationalError:
         pass
 
-    # 9. Resource Changes (NEW - Critical for "What changed?" queries)
+    # 6. Resource Changes (Critical for "What changed?" queries)
     try:
         for change in c.execute("""
             SELECT change_id, resource_id, change_type, changed_by, 
@@ -192,7 +163,7 @@ def build_reliability_graph(db_path: str, mode: str = "lite", **kwargs) -> Tuple
     except sqlite3.OperationalError:
         pass
 
-    # 10. Resource Baselines (NEW - For "Is this normal?" queries)
+    # 7. Resource Baselines (For "Is this normal?" queries)
     try:
         for baseline in c.execute("""
             SELECT baseline_id, resource_id, metric_name, baseline_type, 
@@ -218,21 +189,19 @@ def build_reliability_graph(db_path: str, mode: str = "lite", **kwargs) -> Tuple
     except sqlite3.OperationalError:
         pass
 
-    # 11. SLA Policies (NEW)
+    # 8. SLA Policies
     try:
         for sla in c.execute("""
-            SELECT sla_id, resource_id, max_duration_seconds, max_cost_usd, 
-                   availability_target, attributes_json 
+            SELECT sla_id, resource_id, max_duration_seconds,
+                   availability_target, attributes_json
             FROM sla_policy
         """):
             nid = f"sla::{sla['sla_id']}"
             attrs = safe_json(sla['attributes_json'])
-            
+
             text = "SLA Policy\n"
             if sla['max_duration_seconds']:
                 text += f"Max Duration: {sla['max_duration_seconds']/60:.0f} min\n"
-            if sla['max_cost_usd']:
-                text += f"Max Cost: ${sla['max_cost_usd']}\n"
             if sla['availability_target']:
                 text += f"Availability: {sla['availability_target']*100:.2f}%\n"
             if 'business_impact' in attrs:
@@ -249,7 +218,7 @@ def build_reliability_graph(db_path: str, mode: str = "lite", **kwargs) -> Tuple
     except sqlite3.OperationalError:
         pass
 
-    # 12. Metrics (Increased limit, linked to resources and runs)
+    # 9. Metrics
     metric_sql = """
     SELECT metric_point_id, resource_id, run_id, metric_name, value_number, unit, time 
     FROM metric_point 
@@ -268,7 +237,7 @@ def build_reliability_graph(db_path: str, mode: str = "lite", **kwargs) -> Tuple
         if m['run_id']:
             edges.append(GraphEdge(nid, f"run::{m['run_id']}", "metric_of_run", {}))
 
-    # 13. Lineage Edges (from lineage_edge table)
+    # 10. Lineage Edges
     for lineage in c.execute("SELECT src_resource_id, dst_resource_id, relation_type FROM lineage_edge"):
         edges.append(GraphEdge(
             f"resource::{lineage['src_resource_id']}", 
@@ -276,30 +245,6 @@ def build_reliability_graph(db_path: str, mode: str = "lite", **kwargs) -> Tuple
             lineage['relation_type'], 
             {}
         ))
-
-    # 14. Cost Records (NEW - Link runs to costs)
-    try:
-        for cost in c.execute("""
-            SELECT cost_id, run_id, resource_id, cost_usd, dbu, time, attributes_json 
-            FROM cost_record 
-            ORDER BY time DESC LIMIT 200
-        """):
-            nid = f"cost::{cost['cost_id']}"
-            attrs = safe_json(cost['attributes_json'])
-            
-            text = f"Cost: ${cost['cost_usd']:.2f}"
-            if cost['dbu']:
-                text += f"\nDBU: {cost['dbu']}"
-            text += f"\nTime: {cost['time']}"
-            
-            nodes.append(GraphNode(nid, "cost", f"Cost ${cost['cost_usd']:.2f}", text, attrs))
-            
-            if cost['run_id']:
-                edges.append(GraphEdge(f"run::{cost['run_id']}", nid, "incurred_cost", {}))
-            if cost['resource_id']:
-                edges.append(GraphEdge(nid, f"resource::{cost['resource_id']}", "cost_of_resource", {}))
-    except sqlite3.OperationalError:
-        pass
 
     conn.close()
     return nodes, edges

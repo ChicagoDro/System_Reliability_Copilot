@@ -52,68 +52,7 @@ PROMPT_PACKS: Dict[str, PromptPack] = {
     ),
 
     # --------------------------------------------------------------------------
-    # 2. Cost Analysis
-    # --------------------------------------------------------------------------
-    "cost_anomaly_review": PromptPack(
-        name="Cost Anomaly Review",
-        description="Analyze a cost spike: drivers, trend, and optimization.",
-        steps=[
-            PromptStep(
-                key="breakdown",
-                prompt=(
-                    "You are a FinOps analyst. Analyze the cost data for the selected resource.\n"
-                    "Is the increase sudden (spike) or gradual (creep)?\n"
-                    "Correlate the cost increase with run count or data volume if possible."
-                ),
-            ),
-            PromptStep(
-                key="optimization",
-                prompt=(
-                    "Consult Vendor Docs (Databricks/Snowflake/AWS) to recommend cost-saving measures.\n"
-                    "Should we switch to Spot instances? Change the warehouse size? Use auto-termination?"
-                ),
-            ),
-        ],
-    ),
-
-    # --------------------------------------------------------------------------
-    # 3. Incident Response (Post-Mortem)
-    # --------------------------------------------------------------------------
-    "incident_postmortem": PromptPack(
-        name="Draft Post-Mortem",
-        description="Draft a formal incident report (Timeline, RCA, Action Items).",
-        steps=[
-            PromptStep(
-                key="timeline",
-                prompt=(
-                    "Construct a detailed timeline of the incident:\n"
-                    "- Detection Time (when did the alert fire?)\n"
-                    "- Impact Start Time (when did metrics degrade?)\n"
-                    "- Resolution Time (when did status return to normal?)\n"
-                    "Use the retrieved telemetry."
-                ),
-            ),
-            PromptStep(
-                key="impact_analysis",
-                prompt=(
-                    "Assess the business impact.\n"
-                    "Which downstream resources (tables, reports, services) were affected?\n"
-                    "Were any SLAs breached?"
-                ),
-            ),
-            PromptStep(
-                key="rca_draft",
-                prompt=(
-                    "Draft the Root Cause Analysis (RCA) section.\n"
-                    "Use the '5 Whys' technique if possible.\n"
-                    "State clearly: Was this a code deployment, config change, or vendor outage?"
-                ),
-            ),
-        ],
-    ),
-
-    # --------------------------------------------------------------------------
-    # 4. Log Analysis (RCA)
+    # 2. Log Analysis (RCA)
     # --------------------------------------------------------------------------
     "log_root_cause_analysis": PromptPack(
         name="Log Root Cause Analysis",
@@ -137,7 +76,7 @@ PROMPT_PACKS: Dict[str, PromptPack] = {
     ),
 
     # --------------------------------------------------------------------------
-    # 5. Resource Health (Failing Resources)
+    # 3. Resource Health (Failing Resources)
     # --------------------------------------------------------------------------
     "resource_health_check": PromptPack(
         name="Resource Health Check",

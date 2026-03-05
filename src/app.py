@@ -14,10 +14,9 @@ from src.reports.base import SelectionLike
 from src.reports.registry import get_reports, get_report_map, get_default_report_key
 from src.RAG_chatbot.prompts_deterministic import PROMPT_PACKS
 from src.RAG_chatbot.investigation_engine import (
-    InvestigationEngine, 
+    InvestigationEngine,
     get_investigation_plan,
     PLAN_RUN_FAILURE,
-    PLAN_COST_SPIKE,
     PLAN_SLA_BREACH,
     PLAN_DATA_QUALITY
 )
@@ -97,18 +96,7 @@ def _default_chips_for_selection(report_name: str, sel: SelectionLike) -> List[C
             focus=True
         ))
     
-    # 2. Cost spikes
-    if "cost" in report_slug or "spend" in report_slug:
-        base.append(Chip(
-            id=f"investigate:cost_spike:{_safe_slug(eid)}",
-            label="🔬 Cost Deep Dive",
-            group="Diagnose",
-            prompt="INVESTIGATE:cost_spike",
-            investigation_plan="cost_spike",
-            focus=True
-        ))
-    
-    # 3. SLA breaches
+    # 2. SLA breaches
     if "sla" in report_slug or "breach" in sel.label.lower():
         base.append(Chip(
             id=f"investigate:sla_breach:{_safe_slug(eid)}",
@@ -139,26 +127,6 @@ def _default_chips_for_selection(report_name: str, sel: SelectionLike) -> List[C
                 label="🕵️ SLA Triage (Deep Dive)",
                 group="Diagnose",
                 prompt="PACK:triage_sla_miss",
-                focus=True
-            ))
-
-    if "cost" in report_slug or "spend" in report_slug:
-        if "cost_anomaly_review" in PROMPT_PACKS:
-            base.append(Chip(
-                id=f"pack:cost:{_safe_slug(eid)}",
-                label="📉 Cost Analysis (Deep Dive)",
-                group="Diagnose",
-                prompt="PACK:cost_anomaly_review",
-                focus=True
-            ))
-
-    if "incident" in report_slug or et == "incident":
-        if "incident_postmortem" in PROMPT_PACKS:
-            base.append(Chip(
-                id=f"pack:inc:{_safe_slug(eid)}",
-                label="📝 Draft Post-Mortem",
-                group="Fix",
-                prompt="PACK:incident_postmortem",
                 focus=True
             ))
 
@@ -220,35 +188,23 @@ def _render_chip_groups(chips: List[Chip], key_prefix: str) -> None:
 
 PILLAR_CATALOG: List[Tuple[str, str, List[str], List[Tuple[str, str]]]] = [
     (
-        "Incident Response",
-        "Active incidents, severity breakdown, and MTTR.",
-        ["Recent Incidents", "Incident Severity Breakdown"],
-        [("MTTR Analysis", "Mean Time To Recovery trends."), ("Post-Mortem Generator", "Draft summaries for closed incidents.")],
-    ),
-    (
         "Platform Health",
         "Resource status, run failures, and pipeline reliability.",
-        ["Failing Resources", "Run History", "Platform Availability", "SLA Breaches"],
+        ["Failing Resources", "SLA Breaches"],
         [("Zombie Resources", "Active resources with no recent runs.")],
     ),
     (
         "Observability",
-        "Logs, metrics, and anomaly detection.",
-        ["Service Health (Golden Signals)", "Error Log Volume", "Metric Anomalies"],
-        [("Log Noise Reduction", "Identify spammy recurring logs."), ("Trace Latency", "P95 latency across distributed traces.")],
-    ),
-    (
-        "Cost & Efficiency",
-        "Spend vs Reliability tradeoffs.",
-        ["Cloud Cost Overview"],
-        [("Cost of Downtime", "Estimated financial impact of recent outages."), ("Idle Resources", "Platforms provisioned but unused.")],
+        "Golden signals and infrastructure health.",
+        ["Service Health (Golden Signals)"],
+        [("Trace Latency", "P95 latency across distributed traces.")],
     ),
 ]
 
 REPORT_NAME_ALIASES = {
-    "Recent Incidents": "🚨 Recent Incidents",
     "Failing Resources": "🔥 Failing Resources",
-    "Recent Run History": "🏃 Run History",
+    "SLA Breaches": "⏱️ SLA Breaches",
+    "Service Health (Golden Signals)": "📡 Service Health",
 }
 
 
@@ -304,7 +260,7 @@ def _render_sidebar_report_nav(report_map: Dict[str, object]) -> None:
     )
 
     st.header("Reports (Pillars)")
-    q = st.text_input("Search reports", key="report_search", placeholder="e.g. cost, reliability…")
+    q = st.text_input("Search reports", key="report_search", placeholder="e.g. incidents, reliability…")
 
     def matches(text: str) -> bool:
         return (not q) or (q.lower() in text.lower())
@@ -406,7 +362,6 @@ def run_investigation(plan_name: str, focus: Optional[Dict[str, str]] = None) ->
     # Map plan name to actual plan
     plan_map = {
         "run_failure": PLAN_RUN_FAILURE,
-        "cost_spike": PLAN_COST_SPIKE,
         "sla_breach": PLAN_SLA_BREACH,
         "data_quality": PLAN_DATA_QUALITY,
     }
