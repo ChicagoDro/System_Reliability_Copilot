@@ -292,32 +292,34 @@ def ingest_reliability_graph_to_neo4j(
     driver = GraphDatabase.driver(uri, auth=(username, password))
     try:
         with driver.session(database=database) as session:
-            # 1. Clear existing graph data
-            session.run("MATCH (n:ReliabilityNode) DETACH DELETE n")
-
-            # 2. Full-text index (idempotent)
+            # 1. Full-text index (idempotent — covers nodes from both ingest paths)
             session.run("""
                 CREATE FULLTEXT INDEX reliabilityFullText IF NOT EXISTS
                 FOR (n:ReliabilityNode) ON EACH [n.title, n.text]
             """)
 
-            # 3. Ingest nodes in one batched statement
+            # 2. Merge nodes by node_id — compatible with typed nodes already created
+            #    by ingest_embed_index.py (Resource, Run, etc. already carry :ReliabilityNode)
             node_data = [
                 {
-                    "node_id":   n.id,
-                    "node_type": n.type,
-                    "title":     n.title,
-                    "text":      n.text,
+                    "node_id":    n.id,
+                    "node_type":  n.type,
+                    "title":      n.title,
+                    "text":       n.text,
                     "attrs_json": json.dumps(n.attrs),
                 }
                 for n in nodes
             ]
             session.run(
-                "UNWIND $nodes AS props CREATE (n:ReliabilityNode) SET n = props",
+                """
+                UNWIND $nodes AS props
+                MERGE (n:ReliabilityNode {node_id: props.node_id})
+                SET n += props
+                """,
                 nodes=node_data,
             )
 
-            # 4. Ingest edges grouped by relationship type (avoids dynamic rel-type issue)
+            # 3. Ingest edges grouped by relationship type (avoids dynamic rel-type issue)
             edges_by_type: Dict[str, List[Dict[str, str]]] = defaultdict(list)
             for e in edges:
                 rel = e.relation_type.upper().replace("-", "_").replace(" ", "_").replace(".", "_")

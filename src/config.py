@@ -115,5 +115,6 @@ NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
 NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
 
 # Vector index names (created during ingestion, referenced during retrieval)
-NEO4J_VENDOR_DOCS_INDEX = os.getenv("NEO4J_VENDOR_DOCS_INDEX", "vendor_docs")
-NEO4J_RUNBOOKS_INDEX    = os.getenv("NEO4J_RUNBOOKS_INDEX",    "runbooks")
+NEO4J_VENDOR_DOCS_INDEX    = os.getenv("NEO4J_VENDOR_DOCS_INDEX",    "vendor_docs")
+NEO4J_RUNBOOKS_INDEX       = os.getenv("NEO4J_RUNBOOKS_INDEX",       "runbooks")
+NEO4J_RELIABILITY_INDEX    = os.getenv("NEO4J_RELIABILITY_INDEX",    "reliability_evidence")

@@ -26,6 +26,7 @@ from src.config import (
     NEO4J_DATABASE,
     NEO4J_VENDOR_DOCS_INDEX,
     NEO4J_RUNBOOKS_INDEX,
+    NEO4J_RELIABILITY_INDEX,
     DOCS_RETRIEVER_K,
     RUNBOOKS_RETRIEVER_K,
 )
@@ -97,6 +98,12 @@ class DatabricksDocsRetriever(Neo4jVectorRetriever):
 class RunbookRetriever(Neo4jVectorRetriever):
     def __init__(self) -> None:
         super().__init__(NEO4J_RUNBOOKS_INDEX, "Runbook")
+
+
+class ReliabilityDocRetriever(Neo4jVectorRetriever):
+    """Vector similarity search over the reliability evidence index (resources, runs, metrics, logs, incidents)."""
+    def __init__(self) -> None:
+        super().__init__(NEO4J_RELIABILITY_INDEX, "ReliabilityDoc")
 
 # ---------------------------------------------------------------------------
 # Source formatting helpers
@@ -281,10 +288,12 @@ class ReliabilityAssistant:
         graph_retriever: GraphRAGRetriever,
         docs_retriever: Optional[Neo4jVectorRetriever] = None,
         runbooks_retriever: Optional[Neo4jVectorRetriever] = None,
+        reliability_retriever: Optional[Neo4jVectorRetriever] = None,
     ) -> None:
         self.graph_retriever = graph_retriever
         self.docs_retriever = docs_retriever
         self.runbooks_retriever = runbooks_retriever
+        self.reliability_retriever = reliability_retriever
         self.llm = get_llm()
         self._pipeline = self._build_pipeline()
 
@@ -293,10 +302,12 @@ class ReliabilityAssistant:
         graph = GraphRAGRetriever.from_local_index()
         docs = DatabricksDocsRetriever()
         rbooks = RunbookRetriever()
+        reliability = ReliabilityDocRetriever()
         return cls(
             graph_retriever=graph,
             docs_retriever=docs if docs.is_available() else None,
             runbooks_retriever=rbooks if rbooks.is_available() else None,
+            reliability_retriever=reliability if reliability.is_available() else None,
         )
 
     # ------------------------------------------------------------------
@@ -404,6 +415,12 @@ class ReliabilityAssistant:
                     if node:
                         telemetry_docs.insert(0, _graph_node_to_doc(forced_id, node))
                         node_ids.insert(0, forced_id)
+
+            # Augment with vector similarity results from the reliability evidence index
+            if self.reliability_retriever:
+                vec_docs = self.reliability_retriever.retrieve(question, k=DOCS_RETRIEVER_K)
+                # Prepend so the most semantically relevant hits are seen first
+                telemetry_docs = vec_docs + telemetry_docs
 
         vendor_docs: List[Document] = (
             self.docs_retriever.retrieve(question, k=DOCS_RETRIEVER_K)
